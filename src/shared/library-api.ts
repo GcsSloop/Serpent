@@ -762,6 +762,10 @@ export interface SerpentLibraryApi {
   openFolderWith(input: { libraryId: string; folderId: string }): Promise<LibraryApiResult<void>>;
   copyFolderPath(input: { libraryId: string; folderId: string }): Promise<LibraryApiResult<void>>;
   retryArtifact(input: { libraryId: string; assetId: string; kind: 'thumbnail' | 'webm_proxy' | 'audio_proxy' }): Promise<LibraryApiResult<{ assetId: string; kind: string }>>;
+  setAudioPreviewPreference(input: {
+    libraryId: string;
+    preferCover: boolean;
+  }): Promise<LibraryApiResult<{ preferCover: boolean; rebuilt: number }>>;
   /**
    * Write a quarter-turn into a still image file. `baked: false` means the
    * file was left unchanged (video, sequence, or a format that stays view-only).

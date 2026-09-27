@@ -16,6 +16,7 @@ import {
 import {
   criticalConfirmationPromptSchema,
   type CriticalConfirmationDecision,
+  type CriticalConfirmationPrompt,
 } from '../../shared/critical-confirmation';
 import { parseShowEditContextMenuResult } from '../../shared/edit-context-menu';
 import {
@@ -347,7 +348,7 @@ export const shell: SerpentShellApi = Object.freeze({
   setInputCaptureSystemModalActive(active: boolean) {
     ipcRenderer.send(PLUGIN_INPUT_CAPTURE_SYSTEM_MODAL_CHANNEL, { active: Boolean(active) });
   },
-  onCriticalConfirmationPrompt(listener) {
+  onCriticalConfirmationPrompt(listener: (payload: CriticalConfirmationPrompt) => void) {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => {
       const parsed = criticalConfirmationPromptSchema.safeParse(payload);
       if (!parsed.success) return;

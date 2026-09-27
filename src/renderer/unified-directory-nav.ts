@@ -392,7 +392,7 @@ export function filterDirectoryEntriesByName(
     while (current) {
       if (keep.has(current.folderId)) break;
       keep.add(current.folderId);
-      const parentId = current.parentFolderId;
+      const parentId: string | null = current.parentFolderId;
       current = parentId ? byId.get(parentId) : undefined;
     }
   }
