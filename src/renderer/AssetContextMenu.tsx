@@ -779,6 +779,7 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
                             ? t("command.folder.revealInFinder")
                             : t("command.folder.revealInExplorer")
                         }
+                        shortcut={isMac ? "⌘⇧S" : "Ctrl+Shift+S"}
                         onAction={() => onOpenFolderInFileManager(desc.entity!.id)}
                       />
                     </>
@@ -1196,6 +1197,7 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
                     onAction={() =>
                       runSidebarCommand("folder.open-in-file-manager")
                     }
+                    shortcut={openInFileManagerItem.shortcutLabel ?? undefined}
                   />
                 )}
                 <PluginMenuItems

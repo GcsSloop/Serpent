@@ -40,6 +40,10 @@ export interface AppSettingsDialogProps {
   onToggleField: (field: keyof CanvasPreferences["fields"]) => void;
   onToggleHoverAudioPlay: () => void;
   onToggleHoverVideoSound: () => void;
+  audioPreviewPrefersCover: boolean;
+  onAudioPreviewPrefersCoverChange: (preferCover: boolean) => void;
+  bakeImageRotation: boolean;
+  onBakeImageRotationChange: (bakeIntoFile: boolean) => void;
   aiUiPrefs: AiUiPreferences;
   aiConfigPanel: ReactNode;
   onToggleShowAiBadges: () => void;
@@ -74,6 +78,10 @@ export function AppSettingsDialog({
   onToggleField,
   onToggleHoverAudioPlay,
   onToggleHoverVideoSound,
+  audioPreviewPrefersCover,
+  onAudioPreviewPrefersCoverChange,
+  bakeImageRotation,
+  onBakeImageRotationChange,
   aiUiPrefs,
   aiConfigPanel,
   onToggleShowAiBadges,
@@ -237,7 +245,9 @@ export function AppSettingsDialog({
             {!showingPluginSettings && activeCategory === "assets" ? (
               <AssetsSettingsPage
                 autoDetectImageSequences={autoDetectImageSequences}
+                bakeImageRotation={bakeImageRotation}
                 imageSequenceDetectionEnabled={imageSequenceDetectionEnabled}
+                onBakeImageRotationChange={onBakeImageRotationChange}
                 onToggleAutoDetectImageSequences={onToggleAutoDetectImageSequences}
                 onToggleImageSequenceDetection={onToggleImageSequenceDetection}
               />
@@ -251,6 +261,8 @@ export function AppSettingsDialog({
                 onToggleField={onToggleField}
                 onToggleHoverAudioPlay={onToggleHoverAudioPlay}
                 onToggleHoverVideoSound={onToggleHoverVideoSound}
+                audioPreviewPrefersCover={audioPreviewPrefersCover}
+                onAudioPreviewPrefersCoverChange={onAudioPreviewPrefersCoverChange}
               />
             ) : null}
             {!showingPluginSettings && activeCategory === "ai" ? (

@@ -382,20 +382,12 @@ function linkedFolderRow(window: Page, label: string) {
 async function confirmAssetDiskDelete(
   application: ElectronApplication,
 ): Promise<void> {
-  const windowsBefore = application.windows().length;
-  await expect
-    .poll(() => application.windows().length, { timeout: 10_000 })
-    .toBeGreaterThan(windowsBefore);
-  const criticalWindow = application.windows().at(-1)!;
-  await expect(
-    criticalWindow.getByRole('heading', {
-      name: '从磁盘删除这些链接资产的源文件？',
-    }),
-  ).toBeVisible();
-  await criticalWindow
-    .getByRole('button', { name: '永久删除', exact: true })
-    .click()
-    .catch(() => undefined);
+  const window = await application.firstWindow();
+  const dialog = window.getByRole('dialog', { name: '从磁盘删除这些链接资产的源文件？' });
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await dialog
+    .getByRole('button', { name: '强制删除', exact: true })
+    .click();
 }
 
 /**
@@ -405,18 +397,12 @@ async function confirmAssetDiskDelete(
 async function confirmLinkedFolderDiskDelete(
   application: ElectronApplication,
 ): Promise<void> {
-  const windowsBefore = application.windows().length;
-  await expect
-    .poll(() => application.windows().length, { timeout: 10_000 })
-    .toBeGreaterThan(windowsBefore);
-  const criticalWindow = application.windows().at(-1)!;
-  await expect(
-    criticalWindow.getByRole('heading', { name: '从磁盘删除链接文件夹内容？' }),
-  ).toBeVisible();
-  await criticalWindow
-    .getByRole('button', { name: '永久删除', exact: true })
-    .click()
-    .catch(() => undefined);
+  const window = await application.firstWindow();
+  const dialog = window.getByRole('dialog', { name: '从磁盘删除链接文件夹内容？' });
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await dialog
+    .getByRole('button', { name: '强制删除', exact: true })
+    .click();
 }
 
 async function listAllAssets(window: Page): Promise<AssetSnapshot[]> {

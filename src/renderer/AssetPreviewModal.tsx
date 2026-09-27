@@ -47,6 +47,7 @@ import { ZoomableImage } from "./zoomable-preview-image";
 import { useViewerChromeContrast } from "./use-viewer-chrome-contrast";
 import { VIEWER_CHROME_TAB_INDEX } from "./viewer-focus-policy";
 import { ImageSequencePlayer } from "./ImageSequencePlayer";
+import { GifViewerPlayer } from "./GifViewerPlayer";
 import { isGifDisplayName } from "./gif-player-controls";
 import {
   ViewerContextMenu,
@@ -71,10 +72,13 @@ import {
 import { ShellSurface, ViewerSurface } from "./ui/surfaces";
 import { ModelViewerSurface } from "./3d-viewer/viewer-surface";
 import { isMacPlatform } from "./commands/command-types";
+import { isBakeableStillImageFile } from "../shared/bakeable-still-image";
 
 interface AssetPreviewModalProps {
   api: SerpentLibraryApi;
   asset: AssetSummary;
+  /** When on, quarter-turns of bakeable stills are written into the file. */
+  bakeImageRotation?: boolean;
   /** Owned by a parent that survives per-asset remounts (Serpent-ayf). */
   chromeIdle: boolean;
   libraryId: string;
@@ -168,6 +172,7 @@ const AssetPreviewModalContent = forwardRef<
   {
     api,
     asset,
+    bakeImageRotation = false,
     chromeIdle,
     libraryId,
     onChromeActivity,
@@ -876,13 +881,21 @@ const AssetPreviewModalContent = forwardRef<
     asset.mediaType === "image" &&
     Boolean(imageSrc) &&
     (ready || Boolean(placeholderUrl));
+  const isIllustratorFile = asset.relativeFilePath.toLowerCase().endsWith(".ai");
+  const illustratorPdfPreview = isIllustratorFile && (
+    (ready && resolution?.sourceMimeType === "application/pdf")
+    || Boolean(placeholderUrl)
+  );
   const isTextViewer = ready && resolution?.mediaType === "text";
-  const isDocumentViewer = ready && resolution?.mediaType === "document";
+  const isDocumentViewer = ready
+    && resolution?.mediaType === "document"
+    && !isIllustratorFile;
   const viewerContextMenuAvailable = ready && !isTextViewer;
   const viewerTransformable =
     Boolean(asset.sequence) ||
     asset.mediaType === "image" ||
-    asset.mediaType === "video";
+    asset.mediaType === "video" ||
+    illustratorPdfPreview;
   const fitShortcut = viewerTransformable ? "Numpad ." : undefined;
   const copyShortcut = isMacPlatform(navigator.userAgent) ? "⌘C" : "Ctrl+C";
 
@@ -891,22 +904,81 @@ const AssetPreviewModalContent = forwardRef<
   // cases the error surface is the honest presentation to swap to.
   useEffect(() => {
     if (!preloadOnly) return;
-    if (unsupported || viewerError || primarySurface === "unavailable") {
+    if (unsupported || viewerError || primarySurface === "unavailable" || illustratorPdfPreview) {
       notifyPresentationReady();
     }
   }, [
     notifyPresentationReady,
     preloadOnly,
     primarySurface,
+    illustratorPdfPreview,
     unsupported,
     viewerError,
   ]);
 
-  const rotateViewer = useCallback(() => {
-    setDisplayTransform((current) =>
-      applyViewerDisplayTransformAction(current, "rotate-clockwise"),
-    );
-  }, []);
+  useEffect(() => {
+    if (illustratorPdfPreview) notifyPresentationReady();
+  }, [illustratorPdfPreview, notifyPresentationReady]);
+
+  const bakingRotationRef = useRef(false);
+  const rotateViewerBy = useCallback((
+    direction: "clockwise" | "counter-clockwise",
+  ) => {
+    const canBake = bakeImageRotation
+      && !asset.sequence
+      && asset.mediaType === "image"
+      && isBakeableStillImageFile(asset.relativeFilePath);
+    if (!canBake) {
+      setDisplayTransform((current) =>
+        applyViewerDisplayTransformAction(
+          current,
+          direction === "clockwise" ? "rotate-clockwise" : "rotate-counter-clockwise",
+        ),
+      );
+      return;
+    }
+    if (bakingRotationRef.current) return;
+    bakingRotationRef.current = true;
+    void api.rotateImageContent({
+      libraryId,
+      assetId: asset.assetId,
+      direction,
+    }).then(async (result) => {
+      if (!result.ok) {
+        setError(requestFailureMessage(t("preview.cannotOpen"), result.error, t));
+        return;
+      }
+      if (!result.value.baked) {
+        setDisplayTransform((current) =>
+          applyViewerDisplayTransformAction(
+            current,
+            direction === "clockwise" ? "rotate-clockwise" : "rotate-counter-clockwise",
+          ),
+        );
+        return;
+      }
+      setDisplayTransform(IDENTITY_VIEWER_DISPLAY_TRANSFORM);
+      await resolvePreview(true);
+    }).finally(() => {
+      bakingRotationRef.current = false;
+    });
+  }, [
+    api,
+    asset.assetId,
+    asset.mediaType,
+    asset.relativeFilePath,
+    asset.sequence,
+    bakeImageRotation,
+    libraryId,
+    resolvePreview,
+    t,
+  ]);
+  const rotateViewerClockwise = useCallback(() => {
+    rotateViewerBy("clockwise");
+  }, [rotateViewerBy]);
+  const rotateViewerCounterClockwise = useCallback(() => {
+    rotateViewerBy("counter-clockwise");
+  }, [rotateViewerBy]);
   const flipViewerHorizontal = useCallback(() => {
     setDisplayTransform((current) =>
       applyViewerDisplayTransformAction(current, "flip-horizontal"),
@@ -1050,7 +1122,8 @@ const AssetPreviewModalContent = forwardRef<
               libraryId={libraryId}
               onFullscreen={() => void toggleFullscreen()}
               onPresentationReady={notifyPresentationReady}
-              onRotate={rotateViewer}
+              onRotate={rotateViewerClockwise}
+              onRotateCounterClockwise={rotateViewerCounterClockwise}
               onSwipeNext={onNext}
               onSwipePrevious={onPrevious}
               preloadOnly={preloadOnly}
@@ -1104,7 +1177,8 @@ const AssetPreviewModalContent = forwardRef<
                 setManualRetryError(null);
                 setError(null);
               }}
-              onRotate={rotateViewer}
+              onRotate={rotateViewerClockwise}
+              onRotateCounterClockwise={rotateViewerCounterClockwise}
               onSwipeNext={onNext}
               onSwipePrevious={onPrevious}
               onUserActivity={() => onChromeActivity("pointerdownOrClick")}
@@ -1157,6 +1231,40 @@ const AssetPreviewModalContent = forwardRef<
               onPresentationReady={notifyPresentationReady}
               sourceUrl={resolution.url}
             />
+          ) : illustratorPdfPreview ? (
+            <>
+              {placeholderUrl ? (
+                <ZoomableImage
+                  alt={asset.displayName}
+                  displayTransform={displayTransform}
+                  fitRequestToken={fitRequestToken}
+                  isFullscreen={isFullscreen}
+                  keyboardShortcutsDisabled={preloadOnly}
+                  key={asset.assetId}
+                  onFullscreen={() => void toggleFullscreen()}
+                  onPresentationReady={notifyPresentationReady}
+                  onRotate={rotateViewerClockwise}
+                  onRotateCounterClockwise={rotateViewerCounterClockwise}
+                  onSwipeNext={onNext}
+                  onSwipePrevious={onPrevious}
+                  preloadOnly={preloadOnly}
+                  src={placeholderUrl}
+                />
+              ) : null}
+              <div className="preview-state is-viewer-notice" data-preview-notice="illustrator-pdf" role="status">
+                <strong>{t("preview.illustratorPdfTitle")}</strong>
+                <p>
+                  {t("preview.illustratorPdfBody")} {t("preview.openWithSystem")}
+                </p>
+                <button
+                  onClick={() => void openExternal()}
+                  tabIndex={VIEWER_CHROME_TAB_INDEX}
+                  type="button"
+                >
+                  {t("preview.openExternal")}
+                </button>
+              </div>
+            </>
           ) : ready && resolution?.mediaType === "document" && resolution.url ? (
             resolution.sourceMimeType === "application/pdf" ? (
               <PdfViewerSurface
@@ -1179,7 +1287,7 @@ const AssetPreviewModalContent = forwardRef<
                 sourceUrl={resolution.url}
               />
             )
-          ) : asset.mediaType === "document" && placeholderUrl ? (
+          ) : asset.mediaType === "document" && placeholderUrl && !isIllustratorFile ? (
             <PdfViewerSurface
               api={api}
               assetId={asset.assetId}
@@ -1203,6 +1311,30 @@ const AssetPreviewModalContent = forwardRef<
               onPresentationReady={notifyPresentationReady}
               onSaved={() => setDirectApproved(true)}
             />
+          ) : showImage && imageSrc && isGifDisplayName(asset.displayName) && !preloadOnly ? (
+            <GifViewerPlayer
+              alt={asset.displayName}
+              autoPlay
+              colorSpaceOptions={resolution?.colorSpace?.options}
+              colorSpaceValue={
+                selectedColorSpace ?? resolution?.colorSpace?.id
+              }
+              displayTransform={displayTransform}
+              fitRequestToken={fitRequestToken}
+              isFullscreen={isFullscreen}
+              key={asset.assetId}
+              keyboardShortcutsDisabled={preloadOnly}
+              onColorSpaceChange={selectColorSpace}
+              onFullscreen={() => void toggleFullscreen()}
+              onPresentationReady={notifyPresentationReady}
+              onRotate={rotateViewerClockwise}
+              onRotateCounterClockwise={rotateViewerCounterClockwise}
+              onSwipeNext={onNext}
+              onSwipePrevious={onPrevious}
+              onUserActivity={() => onChromeActivity("pointerdownOrClick")}
+              placeholderSrc={placeholderUrl ?? undefined}
+              src={imageSrc}
+            />
           ) : showImage && imageSrc ? (
             <ZoomableImage
               alt={asset.displayName}
@@ -1217,7 +1349,8 @@ const AssetPreviewModalContent = forwardRef<
               key={asset.assetId}
               onColorSpaceChange={selectColorSpace}
               onFullscreen={() => void toggleFullscreen()}
-              onRotate={rotateViewer}
+              onRotate={rotateViewerClockwise}
+              onRotateCounterClockwise={rotateViewerCounterClockwise}
               onSwipeNext={onNext}
               onSwipePrevious={onPrevious}
               placeholderSrc={placeholderUrl ?? undefined}
@@ -1371,7 +1504,8 @@ const AssetPreviewModalContent = forwardRef<
             onFlipHorizontal={flipViewerHorizontal}
             onFlipVertical={flipViewerVertical}
             onFullscreen={() => void toggleFullscreen()}
-            onRotate={rotateViewer}
+            onRotate={rotateViewerClockwise}
+            onRotateCounterClockwise={rotateViewerCounterClockwise}
             position={viewerContextMenu}
             transformable={viewerTransformable}
           />

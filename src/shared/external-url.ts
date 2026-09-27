@@ -15,6 +15,10 @@ import type {
 import type { ShellNotifyPayload } from './shell-notify';
 import type { CommandCompletedPayload } from './command-completed';
 import type {
+  CriticalConfirmationDecision,
+  CriticalConfirmationPrompt,
+} from './critical-confirmation';
+import type {
   ApplicationMenuCommand,
   ApplicationMenuCommandEvent,
 } from './application-menu';
@@ -198,4 +202,13 @@ export interface SerpentShellApi {
   onBrowseShortcut?(
     listener: (action: BrowseKeyboardAction) => void,
   ): () => void;
+  /** Main → renderer: themed critical confirmation inside the app window. */
+  onCriticalConfirmationPrompt(
+    listener: (payload: CriticalConfirmationPrompt) => void,
+  ): () => void;
+  /** Renderer → Main: decision for the in-app critical confirmation. */
+  respondCriticalConfirmation(
+    requestId: string,
+    decision: CriticalConfirmationDecision,
+  ): Promise<boolean>;
 }

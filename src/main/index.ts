@@ -223,6 +223,11 @@ import { McpPermissionBroker } from './mcp-permission-broker';
 import { McpPermissionPolicyStore } from './mcp-permission-policy-store';
 import { McpOperationChallengeStore } from './mcp-operation-challenge';
 import { CriticalConfirmationWindowManager } from './critical-confirmation-window';
+import { RendererCriticalConfirmationBroker } from './critical-confirmation-prompt';
+import {
+  criticalConfirmationInitialFocusForOperation,
+  criticalDiskDeleteConfirmLabel,
+} from '../shared/critical-confirmation';
 import {
   mcpSettingsRequestSchema,
   mcpSettingsResponseSchema,
@@ -504,6 +509,10 @@ function clearArtifactPathCache(libraryId?: string): void {
   artifactPathCache.clearLibrary(libraryId);
 }
 
+function evictArtifactPathCache(libraryId: string): void {
+  artifactPathCache.evictLibrary(libraryId);
+}
+
 function cancelArtifactPathBatches(libraryId: string): void {
   const prefix = `${libraryId}\u0000`;
   const error = new Error('Library closed before artifact path resolution completed.');
@@ -669,6 +678,7 @@ let mcpPermissionPolicyStore: McpPermissionPolicyStore | undefined;
 let mcpOperationChallengeStore: McpOperationChallengeStore | undefined;
 let mcpPermissionBroker: McpPermissionBroker | undefined;
 let criticalConfirmationWindowManager: CriticalConfirmationWindowManager | undefined;
+let criticalConfirmationBroker: RendererCriticalConfirmationBroker | undefined;
 let scriptRuntimeSupervisor: ScriptRuntimeSupervisor | undefined;
 let pluginRuntimeSupervisor: PluginRuntimeSupervisor | undefined;
 let pluginTrustedRuntimeSupervisor: PluginTrustedRuntimeSupervisor | undefined;
@@ -2004,7 +2014,7 @@ function publishAssetChange(event: AssetChangeEvent): void {
   // or replacement). Artifact-only library changes use the separate
   // library.changed channel and do not evict the viewer's hot path.
   sourcePathCache.clearLibrary(parsed.libraryId);
-  clearArtifactPathCache(parsed.libraryId);
+  evictArtifactPathCache(parsed.libraryId);
   pluginActivationCoordinator?.fanOutDomainEvent(createPluginDomainEvent({
     kind: 'asset.changed',
     libraryId: parsed.libraryId,
@@ -2496,6 +2506,8 @@ async function commandFor(
       });
     }
     case "media.job-summary.request":
+    case "media.set-audio-preview-preference.request":
+    case "asset.rotate-image-content.request":
     case "media.list-jobs.request":
     case "plugin.list-jobs.request":
     case "media.pause-jobs.request":
@@ -3231,16 +3243,23 @@ async function confirmDesktopAutomationFilePlan(
   return response.response === 1;
 }
 
+function askCriticalConfirmation(
+  input: Parameters<RendererCriticalConfirmationBroker['request']>[0],
+): Promise<boolean> {
+  const broker = criticalConfirmationBroker;
+  if (broker === undefined) return Promise.resolve(false);
+  return broker.request(input);
+}
+
 async function confirmCriticalLibraryDeletion(libraryId: string): Promise<boolean> {
-  const manager = criticalConfirmationWindowManager;
   const client = workerClient;
-  if (manager === undefined || client === undefined) return false;
+  if (client === undefined) return false;
   const listed = await client.request({ type: 'library.list' });
   if (!listed.ok || listed.type !== 'library.list') return false;
   const library = listed.libraries.find((candidate) => candidate.libraryId === libraryId);
   if (library === undefined) return false;
   const english = appLocale === 'en';
-  return manager.request({
+  return askCriticalConfirmation({
     title: english ? 'Confirm critical operation' : '确认危险操作',
     heading: english ? 'Delete this library from disk?' : '从磁盘删除这个资源库？',
     message: english
@@ -3251,14 +3270,13 @@ async function confirmCriticalLibraryDeletion(libraryId: string): Promise<boolea
       : '此操作无法撤销。关联文件夹的源目录不会被删除。每次操作都必须确认；不能记住此决定，也不能通过 MCP 权限或“开启所有权限”绕过。',
     cancelLabel: english ? 'Cancel' : '取消',
     confirmLabel: english ? 'Delete from disk' : '从磁盘删除',
+    initialFocus: 'cancel',
   });
 }
 
 async function confirmEnableAllMcpPermissions(label: string): Promise<boolean> {
-  const manager = criticalConfirmationWindowManager;
-  if (manager === undefined) return false;
   const english = appLocale === 'en';
-  return manager.request({
+  return askCriticalConfirmation({
     title: english ? 'Confirm full access' : '确认开启完全权限',
     heading: english ? 'Enable Full Access for this MCP client?' : '为这个 MCP 客户端开启完全权限？',
     message: english
@@ -3269,6 +3287,7 @@ async function confirmEnableAllMcpPermissions(label: string): Promise<boolean> {
       : '此设置只作用于当前客户端凭据。Serpent 仍会执行精确目标、路径边界、版本校验、幂等和 Worker 安全检查。关闭完全权限或删除凭据即可立即停止。',
     cancelLabel: english ? 'Cancel' : '取消',
     confirmLabel: english ? 'Enable Full Access' : '开启完全权限',
+    initialFocus: 'cancel',
   });
 }
 
@@ -3389,25 +3408,24 @@ async function confirmCriticalRendererRequest(request: RendererRequest): Promise
   if (request.type === 'library.delete-from-disk.request') {
     return confirmCriticalLibraryDeletion(request.libraryId);
   }
-  const manager = criticalConfirmationWindowManager;
-  if (manager === undefined) return false;
   const english = appLocale === 'en';
   const count = request.type === 'asset.delete-from-disk.request'
     || request.type === 'asset.delete-permanent.request'
     ? request.assetIds.length
     : 0;
-  const { heading, message, detail } = criticalRendererCopy(
-    criticalRendererOperation(request),
-    count,
-    english,
-  );
-  return manager.request({
+  const operation = criticalRendererOperation(request);
+  const { heading, message, detail } = criticalRendererCopy(operation, count, english);
+  const forceDelete = criticalConfirmationInitialFocusForOperation(operation) === 'confirm';
+  return askCriticalConfirmation({
     title: english ? 'Confirm critical operation' : '确认危险操作',
     heading,
     message,
     detail,
     cancelLabel: english ? 'Cancel' : '取消',
-    confirmLabel: english ? 'Delete permanently' : '永久删除',
+    confirmLabel: forceDelete
+      ? criticalDiskDeleteConfirmLabel(english)
+      : (english ? 'Delete permanently' : '永久删除'),
+    initialFocus: criticalConfirmationInitialFocusForOperation(operation),
   });
 }
 
@@ -3638,6 +3656,27 @@ async function startApplication(): Promise<void> {
     createWindow: (options) => new BrowserWindow(options),
     ipcMain,
     preloadPath: path.join(__dirname, 'critical-confirmation.js'),
+    logger,
+  });
+  criticalConfirmationBroker = new RendererCriticalConfirmationBroker({
+    getTarget: () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return null;
+      const contents = mainWindow.webContents;
+      return {
+        id: contents.id,
+        isDestroyed: () => contents.isDestroyed(),
+        send: (channel, payload) => {
+          contents.send(channel, payload);
+        },
+        once: (event, listener) => {
+          contents.once(event, listener);
+        },
+        removeListener: (event, listener) => {
+          contents.removeListener(event, listener);
+        },
+      };
+    },
+    ipcMain,
     logger,
   });
   app.on("child-process-gone", (_event, details) => {
@@ -5978,6 +6017,8 @@ if (!hasSingleInstanceLock) {
     aiQueueScheduler.clearAll();
     criticalConfirmationWindowManager?.dispose();
     criticalConfirmationWindowManager = undefined;
+    criticalConfirmationBroker?.dispose();
+    criticalConfirmationBroker = undefined;
     if (quitAfterShutdown || !workerClient) return;
     event.preventDefault();
 

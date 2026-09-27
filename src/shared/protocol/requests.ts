@@ -1248,6 +1248,17 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
     libraryId: identifierSchema,
   }),
   z.strictObject({
+    type: z.literal('media.set-audio-preview-preference.request'),
+    libraryId: identifierSchema,
+    preferCover: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal('asset.rotate-image-content.request'),
+    libraryId: identifierSchema,
+    assetId: identifierSchema,
+    direction: z.enum(['clockwise', 'counter-clockwise']),
+  }),
+  z.strictObject({
     type: z.literal('media.list-jobs.request'),
     libraryId: identifierSchema,
     summaryOnly: z.boolean().optional(),
@@ -2386,6 +2397,17 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('media.enqueue-thumbnail-jobs'),
     libraryId: identifierSchema,
+  }),
+  z.strictObject({
+    type: z.literal('media.set-audio-preview-preference'),
+    libraryId: identifierSchema,
+    preferCover: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal('asset.rotate-image-content'),
+    libraryId: identifierSchema,
+    assetId: identifierSchema,
+    direction: z.enum(['clockwise', 'counter-clockwise']),
   }),
   z.strictObject({
     type: z.literal('media.process-thumbnail-queue'),

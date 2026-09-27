@@ -65,7 +65,12 @@ test("opens a multi-page PDF with one rendered wrap per page, no placeholder lef
   const libraryName = "PDF 多页验收";
   const libraryPath = path.join(temporaryRoot, libraryName);
   const pdfSourcePath = path.join(temporaryRoot, "multi.pdf");
+  const illustratorSourcePath = path.join(temporaryRoot, "compatible.ai");
   writeFileSync(pdfSourcePath, buildMultiPagePdf(4));
+  // Synthetic routing fixture: valid PDF bytes under an .ai suffix exercise
+  // the PDF-compatible route without storing a third-party Adobe export. This
+  // does not represent every Adobe-specific Illustrator file structure.
+  writeFileSync(illustratorSourcePath, buildMultiPagePdf(1));
 
   const executablePath = resolveElectronExecutablePath();
   const applicationDirectory = process.env.SERPENT_E2E_APP_DIRECTORY ?? process.cwd();
@@ -79,7 +84,7 @@ test("opens a multi-page PDF with one rendered wrap per page, no placeholder lef
       SERPENT_E2E_CREATE_PARENT_PATH: temporaryRoot,
       SERPENT_E2E_OPEN_LIBRARY_PATH: libraryPath,
       SERPENT_E2E_USER_DATA_PATH: path.join(temporaryRoot, "user-data"),
-      SERPENT_E2E_IMPORT_FILES: pdfSourcePath,
+      SERPENT_E2E_IMPORT_FILES: [pdfSourcePath, illustratorSourcePath].join(path.delimiter),
     },
   });
 
@@ -156,6 +161,20 @@ test("opens a multi-page PDF with one rendered wrap per page, no placeholder lef
     // Fixture MediaBox is 300×200; width-fill pages must keep that ratio.
     expect(layout!.wrapHeight / layout!.wrapWidth).toBeCloseTo(200 / 300, 1);
     expect(layout!.hostScrollHeight).toBeGreaterThan(layout!.hostHeight);
+
+    await window.keyboard.press("Escape");
+    await expect(viewer).toBeHidden();
+    const illustratorCard = window.locator(".asset-card").filter({ hasText: "compatible.ai" });
+    await expect(illustratorCard).toBeVisible();
+    await illustratorCard.dblclick();
+    const illustratorViewer = window.locator(".workspace-viewer");
+    await expect(illustratorViewer.locator("[data-preview-notice='illustrator-pdf']")).toBeVisible({ timeout: 30_000 });
+    const illustratorImage = illustratorViewer.locator("img.preview-image");
+    await expect(illustratorImage.first()).toBeVisible({ timeout: 30_000 });
+    await expect.poll(async () => illustratorImage.first().evaluate((image) => {
+      const element = image as HTMLImageElement;
+      return element.complete && element.naturalWidth > 0;
+    })).toBe(true);
 
   } finally {
     await application.close();

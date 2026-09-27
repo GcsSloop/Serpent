@@ -54,6 +54,7 @@ import {
   resolveFfprobePath,
   resolveOiiotoolPath,
 } from './binary-resolver';
+import { hasPdfCompatibleIllustratorHeader } from './illustrator-ai-format';
 import {
   dominantColorMetrics,
   extractRepresentativePalette,
@@ -149,6 +150,8 @@ import {
 } from './network-metadata-cache';
 
 import { columnsFor, degradedDefaults, hasTable, invalidateColumnProbe, missingColumns, qualify, selectColumns } from './lenient-columns';
+import { isBakeableStillImageFile } from '../shared/bakeable-still-image';
+import { ImageRotationWriteError, rotateStillImageFile } from './rotate-still-image-file';
 import {
   asMediaResourceExhaustedError,
   MEDIA_RESOURCE_EXHAUSTED_ERROR_CODE,
@@ -462,6 +465,56 @@ const SERPENT_OCIO_CONFIG = 'ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5';
  * remaining filter metacharacters keeps bundled font paths valid on both
  * Windows and POSIX.
  */
+const DISPLAY_PREVIEW_KIND_SQL = `CASE
+            WHEN LOWER(a.relative_file_path) LIKE '%.mp4'
+              OR LOWER(a.relative_file_path) LIKE '%.webm'
+              OR LOWER(a.relative_file_path) LIKE '%.mov'
+              OR LOWER(a.relative_file_path) LIKE '%.avi'
+              OR LOWER(a.relative_file_path) LIKE '%.wmv'
+              OR LOWER(a.relative_file_path) LIKE '%.mkv'
+              OR LOWER(a.relative_file_path) LIKE '%.m4v'
+              OR LOWER(a.relative_file_path) LIKE '%.flv'
+            THEN 'video_poster'
+            ELSE 'thumbnail'
+          END`;
+
+/** One browser-paintable preview per asset. JPEG wins over a 16-bit PNG sibling. */
+function pngBitDepth(filePath: string): number | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, 'r');
+    const header = Buffer.alloc(26);
+    if (readSync(fd, header, 0, header.length, 0) < header.length) return null;
+    if (header.subarray(0, 8).toString('latin1') !== '\x89PNG\r\n\x1a\n') return null;
+    if (header.subarray(12, 16).toString('latin1') !== 'IHDR') return null;
+    return header[24] ?? null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function singleDisplayArtifactJoin(alias: string, statusSql: string): string {
+  return `LEFT JOIN revision_artifacts ${alias}
+           ON ${alias}.artifact_id = (
+             SELECT chosen.artifact_id
+               FROM revision_artifacts chosen
+              WHERE chosen.revision_id = a.current_revision_id
+                AND chosen.kind = ${DISPLAY_PREVIEW_KIND_SQL}
+                ${statusSql}
+                AND chosen.invalidated_at IS NULL
+              ORDER BY CASE chosen.mime_type
+                WHEN 'image/jpeg' THEN 0
+                WHEN 'image/webp' THEN 1
+                WHEN 'image/png' THEN 2
+                ELSE 3
+              END,
+              chosen.rowid DESC
+              LIMIT 1
+           )`;
+}
+
 export function escapeFfmpegFilterPath(filePath: string): string {
   return filePath
     .replaceAll('\\', '/')
@@ -715,6 +768,7 @@ import {
 } from './ico-page';
 import {
   AUDIO_EXTENSION_NAMES,
+  AUDIO_FORCED_WAVEFORM_GENERATOR_MARK,
   AUDIO_WAVEFORM_COVER_BACKGROUND,
   AUDIO_WAVEFORM_COVER_GENERATOR_TAG,
   AUDIO_WAVEFORM_COVER_HEIGHT,
@@ -722,6 +776,7 @@ import {
   AUDIO_WAVEFORM_COVER_WIDTH,
   AUDIO_WAVEFORM_VIEWER_HEIGHT,
   AUDIO_WAVEFORM_VIEWER_WIDTH,
+  audioGridThumbnailNeedsRebuild,
   audioMimeForExtension,
   ffprobeHasAttachedPicture,
   isAudioFileName,
@@ -6674,6 +6729,8 @@ function closeIgnoringFailure(connection: DatabaseConnection | undefined): void 
 export class LibraryService {
   /** Stable for this Worker process; a new app process gets a new session. */
   private readonly applicationSessionId = randomUUID();
+  /** App setting: audio grid thumbnails use cover art when the file has one. */
+  private audioPreviewPrefersCover = true;
   private readonly openById = new Map<string, OpenLibrary>();
   private readonly openIdByPath = new Map<string, string>();
   /**
@@ -15989,7 +16046,7 @@ export class LibraryService {
       input.showIgnored === true,
     );
 
-    return visibleChildren.map((row) => {
+    return this.withSequenceFolderCovers(openLibrary, visibleChildren.map((row) => {
       const directAssetCount = counts.directAssetCounts.get(row.folder_id) ?? 0;
       return {
         folderId: row.folder_id,
@@ -16010,7 +16067,7 @@ export class LibraryService {
         coverAssetIds: coverCandidateMap.get(row.folder_id) ?? [],
         linkedFolderId: null,
       };
-    });
+    }));
   }
 
   /**
@@ -16144,7 +16201,7 @@ export class LibraryService {
       });
     }
 
-    return results;
+    return this.withSequenceFolderCovers(openLibrary, results);
   }
 
   private linkedFolderDisplayName(
@@ -16198,7 +16255,7 @@ export class LibraryService {
     if (children.length === 0) return [];
     const directoryChildCounts = countLinkedDirectoryChildren(prefixes);
 
-    return children.map((relativePath) => {
+    return this.withSequenceFolderCovers(openLibrary, children.map((relativePath) => {
       const folderId = encodeLinkedVirtualFolderId(resolved.linkedFolderId, relativePath);
       const directoryAssetCounts = assetCounts.get(relativePath);
       const directAssetCount = directoryAssetCounts?.direct ?? 0;
@@ -16238,7 +16295,7 @@ export class LibraryService {
         ),
         linkedFolderId: resolved.linkedFolderId,
       };
-    });
+    }));
   }
 
   private resolveLinkedFolderScope(
@@ -16332,7 +16389,8 @@ export class LibraryService {
             AND a.deleted_at IS NULL
             AND ${this.explicitIgnoreSql(openLibrary.connection, 'a', showIgnored)}
             AND (
-              a.relative_file_path = ?
+              ? = ''
+              OR a.relative_file_path = ?
               OR (? != '' AND substr(a.relative_file_path, 1, ?) = ?)
             )
           ORDER BY a.relative_file_path`,
@@ -16340,13 +16398,18 @@ export class LibraryService {
       .all(
         linkedFolderId,
         relativePath,
+        relativePath,
         prefix,
         [...prefix].length,
         prefix,
       ) as Array<{ artifact_id: string; relative_file_path: string }>;
 
+    const scopedRows = relativePath === '' && childDirs.length === 0
+      ? rows.filter((row) => !row.relative_file_path.includes('/'))
+      : rows;
+
     if (childDirs.length === 0) {
-      return rows.slice(0, 3).map((row) => row.artifact_id);
+      return scopedRows.slice(0, 3).map((row) => row.artifact_id);
     }
 
     // Serpent-9021d1: Pure linked folder — round-robin across direct child directories
@@ -16401,7 +16464,8 @@ export class LibraryService {
             AND a.deleted_at IS NULL
             AND ${this.explicitIgnoreSql(openLibrary.connection, 'a', showIgnored)}
             AND (
-              a.relative_file_path = ?
+              ? = ''
+              OR a.relative_file_path = ?
               OR (? != '' AND substr(a.relative_file_path, 1, ?) = ?)
             )
           ORDER BY a.relative_file_path`,
@@ -16409,13 +16473,18 @@ export class LibraryService {
       .all(
         linkedFolderId,
         relativePath,
+        relativePath,
         prefix,
         [...prefix].length,
         prefix,
       ) as Array<{ asset_id: string; relative_file_path: string }>;
 
+    const scopedRows = relativePath === '' && childDirs.length === 0
+      ? rows.filter((row) => !row.relative_file_path.includes('/'))
+      : rows;
+
     if (childDirs.length === 0) {
-      return rows.slice(0, 3).map((row) => row.asset_id);
+      return scopedRows.slice(0, 3).map((row) => row.asset_id);
     }
 
     // Serpent-9021d1: Pure linked folder — round-robin across direct child directories
@@ -16683,6 +16752,107 @@ export class LibraryService {
     return { directAssetCounts, childFolderCounts };
   }
 
+  /**
+   * Sequence frames shown from the original file have no thumbnail artifact,
+   * so a folder that only contains a sequence would otherwise stay on the
+   * default folder glyph. Point the cover at the sequence's first frame.
+   */
+  private withSequenceFolderCovers(
+    openLibrary: OpenLibrary,
+    entries: FolderBrowseEntry[],
+  ): FolderBrowseEntry[] {
+    if (!hasTable(openLibrary.connection, 'asset_sequence_frames')) return entries;
+    const pending = entries.filter((entry) => entry.coverArtifactIds.length === 0);
+    if (pending.length === 0) return entries;
+    const previews = new Map<string, { assetId: string; revisionId: string }>();
+    const managedIds = pending
+      .filter((entry) => entry.locationKind === 'managed')
+      .map((entry) => entry.folderId);
+    if (managedIds.length > 0) {
+      const rows = sqliteAllInChunks<string, {
+        folder_id: string;
+        asset_id: string;
+        revision_id: string;
+      }>({
+        connection: openLibrary.connection,
+        values: managedIds,
+        buildSql: (placeholders) =>
+          `SELECT a.managed_folder_id AS folder_id,
+                  a.asset_id,
+                  a.current_revision_id AS revision_id
+             FROM assets a
+             JOIN asset_sequence_frames frame
+               ON frame.asset_id = a.asset_id
+              AND frame.position = 0
+            WHERE a.managed_folder_id IN (${placeholders})
+              AND a.deleted_at IS NULL
+              AND a.current_revision_id IS NOT NULL
+            ORDER BY a.relative_file_path`,
+      });
+      for (const row of rows) {
+        if (!previews.has(row.folder_id)) {
+          previews.set(row.folder_id, {
+            assetId: row.asset_id,
+            revisionId: row.revision_id,
+          });
+        }
+      }
+    }
+    const linkedIds = [...new Set(
+      pending
+        .filter((entry) => entry.locationKind === 'linked' && entry.linkedFolderId)
+        .map((entry) => entry.linkedFolderId!),
+    )];
+    if (linkedIds.length > 0) {
+      const rows = sqliteAllInChunks<string, {
+        linked_folder_id: string;
+        relative_file_path: string;
+        asset_id: string;
+        revision_id: string;
+      }>({
+        connection: openLibrary.connection,
+        values: linkedIds,
+        buildSql: (placeholders) =>
+          `SELECT a.linked_folder_id,
+                  a.relative_file_path,
+                  a.asset_id,
+                  a.current_revision_id AS revision_id
+             FROM assets a
+             JOIN asset_sequence_frames frame
+               ON frame.asset_id = a.asset_id
+              AND frame.position = 0
+            WHERE a.linked_folder_id IN (${placeholders})
+              AND a.deleted_at IS NULL
+              AND a.current_revision_id IS NOT NULL
+            ORDER BY a.relative_file_path`,
+      });
+      for (const entry of pending) {
+        if (entry.locationKind !== 'linked' || !entry.linkedFolderId) continue;
+        const prefix = entry.relativePath === '' ? '' : `${entry.relativePath}/`;
+        const match = rows.find((row) => {
+          if (row.linked_folder_id !== entry.linkedFolderId) return false;
+          const parent = row.relative_file_path.includes('/')
+            ? row.relative_file_path.slice(0, row.relative_file_path.lastIndexOf('/'))
+            : '';
+          return parent === entry.relativePath
+            || (prefix !== '' && row.relative_file_path.startsWith(prefix) && parent === entry.relativePath);
+        });
+        if (match) {
+          previews.set(entry.folderId, {
+            assetId: match.asset_id,
+            revisionId: match.revision_id,
+          });
+        }
+      }
+    }
+    if (previews.size === 0) return entries;
+    return entries.map((entry) => {
+      const preview = previews.get(entry.folderId);
+      if (!preview || entry.coverArtifactIds.length > 0) return entry;
+      return { ...entry, coverSourcePreviews: [preview] };
+    });
+  }
+
   private folderCoverArtifactMap(
     openLibrary: OpenLibrary,
     folderIds: string[],
@@ -16719,6 +16889,7 @@ export class LibraryService {
                     OR LOWER(a.relative_file_path) LIKE '%.wmv'
                     OR LOWER(a.relative_file_path) LIKE '%.mkv'
                     OR LOWER(a.relative_file_path) LIKE '%.m4v'
+                    OR LOWER(a.relative_file_path) LIKE '%.flv'
                   THEN 'video_poster'
                   ELSE 'thumbnail'
                 END
@@ -16831,6 +17002,7 @@ export class LibraryService {
                     OR LOWER(a.relative_file_path) LIKE '%.wmv'
                     OR LOWER(a.relative_file_path) LIKE '%.mkv'
                     OR LOWER(a.relative_file_path) LIKE '%.m4v'
+                    OR LOWER(a.relative_file_path) LIKE '%.flv'
                   THEN 'video_poster'
                   ELSE 'thumbnail'
                 END
@@ -17731,6 +17903,67 @@ export class LibraryService {
     this.mediaJobSummaryCache.invalidate(openLibrary.summary.libraryId);
   }
 
+  /**
+   * Chromium cannot paint a 16-bit PNG card. Stamp 8-bit OIIO thumbnails so
+   * they are not scanned again, and replace 16-bit ones with a new 8-bit job.
+   */
+  private repairUndisplayablePngThumbnails(openLibrary: OpenLibrary): void {
+    const artifactColumns = columnsFor(openLibrary.connection, 'revision_artifacts');
+    if (!artifactColumns.has('status') || !artifactColumns.has('generator_version')) return;
+    const rows = openLibrary.connection.prepare(
+      `SELECT ra.artifact_id, ra.file_path, a.asset_id
+         FROM revision_artifacts ra
+         JOIN assets a ON a.current_revision_id = ra.revision_id
+        WHERE ra.kind = 'thumbnail'
+          AND ra.status = 'ready'
+          AND ra.mime_type = 'image/png'
+          AND ra.invalidated_at IS NULL
+          AND ra.generator_version LIKE 'oiio@%'
+          AND ra.generator_version NOT LIKE '%display-uint8%'
+        LIMIT 24`,
+    ).all() as Array<{ artifact_id: string; file_path: string; asset_id: string }>;
+    if (rows.length === 0) return;
+    const artifactsDir = this.artifactsDir(openLibrary);
+    const eightBitIds: string[] = [];
+    const rebuildArtifactIds: string[] = [];
+    const rebuildAssetIds: string[] = [];
+    for (const row of rows) {
+      const depth = pngBitDepth(path.join(artifactsDir, row.file_path));
+      if (depth === 8) eightBitIds.push(row.artifact_id);
+      else if (depth === 16) {
+        rebuildArtifactIds.push(row.artifact_id);
+        rebuildAssetIds.push(row.asset_id);
+      }
+    }
+    if (eightBitIds.length > 0) {
+      sqliteRunInChunks({
+        connection: openLibrary.connection,
+        values: eightBitIds,
+        buildSql: (placeholders) =>
+          `UPDATE revision_artifacts
+              SET generator_version = generator_version || ';display-uint8'
+            WHERE artifact_id IN (${placeholders})
+              AND generator_version NOT LIKE '%display-uint8%'`,
+      });
+    }
+    if (rebuildArtifactIds.length === 0) return;
+    const now = new Date().toISOString();
+    sqliteRunInChunks({
+      connection: openLibrary.connection,
+      values: rebuildArtifactIds,
+      buildSql: (placeholders) =>
+        `UPDATE revision_artifacts
+            SET invalidated_at = ?
+          WHERE artifact_id IN (${placeholders})
+            AND invalidated_at IS NULL`,
+      bind: (chunk) => [now, ...chunk],
+    });
+    this.enqueueThumbnailJobs(openLibrary.summary.libraryId, {
+      assetIds: [...new Set(rebuildAssetIds)],
+      priority: 200,
+    });
+  }
+
   private cancelQueuedHiddenSequenceMemberJobs(openLibrary: OpenLibrary): void {
     if (!hasTable(openLibrary.connection, 'asset_sequence_frames')) return;
     const now = new Date().toISOString();
@@ -17739,7 +17972,7 @@ export class LibraryService {
         `UPDATE jobs
             SET status = 'cancelled', error_code = 'SEQUENCE_MEMBER', updated_at = ?
           WHERE library_id = ?
-            AND kind IN ('generate_thumbnail', 'extract_palette')
+            AND kind IN ('generate_thumbnail', 'extract_palette', 'extract_metadata')
             AND status IN ('queued', 'paused')
             AND EXISTS (
               SELECT 1
@@ -18185,20 +18418,10 @@ export class LibraryService {
          FROM assets a
          LEFT JOIN revisions r ON r.revision_id = a.current_revision_id
          LEFT JOIN asset_metadata m ON m.asset_id = a.asset_id
-         LEFT JOIN revision_artifacts ra
-           ON ra.revision_id = a.current_revision_id
-          AND ra.kind = CASE
-            WHEN LOWER(a.relative_file_path) LIKE '%.mp4'
-              OR LOWER(a.relative_file_path) LIKE '%.webm'
-              OR LOWER(a.relative_file_path) LIKE '%.mov'
-              OR LOWER(a.relative_file_path) LIKE '%.avi'
-              OR LOWER(a.relative_file_path) LIKE '%.wmv'
-              OR LOWER(a.relative_file_path) LIKE '%.mkv'
-              OR LOWER(a.relative_file_path) LIKE '%.m4v'
-            THEN 'video_poster'
-            ELSE 'thumbnail'
-          END
-          AND ra.invalidated_at IS NULL
+         ${singleDisplayArtifactJoin(
+            'ra',
+            artifactColumns.has('status') ? "AND chosen.status = 'ready'" : '',
+          )}
          LEFT JOIN revision_artifacts video_meta
            ON video_meta.revision_id = a.current_revision_id
           AND video_meta.kind = 'extracted_metadata'
@@ -21276,9 +21499,7 @@ export class LibraryService {
     // file is intentionally broader than this set; this gate only decides
     // whether AI can obtain a decoded visual derivative.
     const imageExts = new Set<string>(IMAGE_EXTENSIONS);
-    const videoExts = new Set([
-      '.mp4', '.mov', '.avi', '.wmv', '.webm', '.mkv', '.m4v',
-    ]);
+    const videoExts = new Set<string>(VIDEO_EXTENSIONS);
     const modelExts = new Set<string>(MODEL_EXTENSIONS);
 
     let enqueued = 0;
@@ -22495,6 +22716,142 @@ export class LibraryService {
   /**
    * Resolve the absolute filesystem path for an asset (no MIME lookup).
    */
+  /**
+   * Quarter-turn a bakeable still image's pixels and record a new revision.
+   * Sequences, video, and formats we cannot rewrite return `{ baked: false }`.
+   */
+  async rotateImageContent(
+    libraryId: string,
+    assetId: string,
+    direction: 'clockwise' | 'counter-clockwise',
+  ): Promise<{ baked: true; revisionId: string } | { baked: false }> {
+    const openLibrary = this.requireOpenLibrary(libraryId);
+    this.assertLibraryWritable(openLibrary);
+    const asset = openLibrary.connection
+      .prepare(
+        `SELECT asset_id, location_kind, linked_folder_id, relative_file_path,
+                current_revision_id, deleted_at, availability
+           FROM assets
+          WHERE asset_id = ?`,
+      )
+      .get(assetId) as {
+        asset_id: string;
+        location_kind: 'managed' | 'linked';
+        linked_folder_id: string | null;
+        relative_file_path: string;
+        current_revision_id: string | null;
+        deleted_at: string | null;
+        availability: 'available' | 'missing';
+      } | undefined;
+    if (!asset || asset.deleted_at || asset.availability !== 'available' || !asset.current_revision_id) {
+      throw new LibraryServiceError('ASSET_NOT_FOUND');
+    }
+    if (
+      LibraryService.detectMediaType(asset.relative_file_path) !== 'image'
+      || !isBakeableStillImageFile(asset.relative_file_path)
+      || this.assetBelongsToImageSequence(openLibrary, assetId)
+    ) {
+      return { baked: false };
+    }
+    const absolutePath = this.resolveAssetPath(libraryId, assetId);
+    const now = new Date().toISOString();
+    const revisionId = randomUUID();
+    const previousRevisionId = asset.current_revision_id;
+    const revisionColumns = columnsFor(openLibrary.connection, 'revisions');
+    const record = openLibrary.connection.transaction(() => {
+      const stat = statSync(absolutePath);
+      const fingerprint = revisionColumns.has('content_fingerprint')
+        ? sha256FileAtPath(absolutePath)
+        : null;
+      if (fingerprint === null) {
+        openLibrary.connection
+          .prepare(
+            `INSERT INTO revisions
+               (revision_id, asset_id, parent_revision_id, byte_size, modified_at,
+                original_filename, origin, accepted_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'replace', ?)`,
+          )
+          .run(
+            revisionId,
+            asset.asset_id,
+            previousRevisionId,
+            stat.size,
+            stat.mtime.toISOString(),
+            path.posix.basename(asset.relative_file_path),
+            now,
+          );
+      } else {
+        openLibrary.connection
+          .prepare(
+            `INSERT INTO revisions
+               (revision_id, asset_id, parent_revision_id, byte_size, modified_at,
+                original_filename, origin, accepted_at, content_fingerprint)
+             VALUES (?, ?, ?, ?, ?, ?, 'replace', ?, ?)`,
+          )
+          .run(
+            revisionId,
+            asset.asset_id,
+            previousRevisionId,
+            stat.size,
+            stat.mtime.toISOString(),
+            path.posix.basename(asset.relative_file_path),
+            now,
+            fingerprint,
+          );
+      }
+      openLibrary.connection
+        .prepare(
+          `UPDATE assets
+              SET current_revision_id = ?, availability = 'available', updated_at = ?
+            WHERE asset_id = ?`,
+        )
+        .run(revisionId, now, asset.asset_id);
+      openLibrary.connection
+        .prepare(
+          `UPDATE revision_artifacts
+              SET invalidated_at = ?
+            WHERE revision_id = ? AND invalidated_at IS NULL`,
+        )
+        .run(now, previousRevisionId);
+      const insertJob = openLibrary.connection.prepare(
+        `INSERT INTO jobs
+           (job_id, library_id, asset_id, revision_id, kind, status, priority,
+            progress, attempt_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'queued', 300, 0.0, 0, ?, ?)`,
+      );
+      for (const kind of ['generate_thumbnail', 'extract_metadata'] as const) {
+        insertJob.run(randomUUID(), libraryId, asset.asset_id, revisionId, kind, now, now);
+      }
+    });
+    try {
+      await rotateStillImageFile(absolutePath, direction, () => {
+        record();
+      });
+    } catch (error) {
+      throw new LibraryServiceError('LIBRARY_NOT_WRITABLE', { cause: error });
+    }
+    this.emitClientAssetsChanged(libraryId, 1);
+    return { baked: true, revisionId };
+  }
+
+  private assetBelongsToImageSequence(openLibrary: OpenLibrary, assetId: string): boolean {
+    if (
+      !hasTable(openLibrary.connection, 'asset_sequence_frames')
+      || !hasTable(openLibrary.connection, 'asset_sequences')
+    ) {
+      return false;
+    }
+    const row = openLibrary.connection
+      .prepare(
+        `SELECT 1 AS hit FROM asset_sequence_frames WHERE asset_id = ?
+         UNION ALL
+         SELECT 1 FROM asset_sequences WHERE primary_asset_id = ?
+         LIMIT 1`,
+      )
+      .get(assetId, assetId) as { hit: number } | undefined;
+    return row !== undefined;
+  }
+
   resolveAssetPath(libraryId: string, assetId: string): string {
     const openLibrary = this.requireOpenLibrary(libraryId);
     const asset = openLibrary.connection
@@ -22814,7 +23171,7 @@ export class LibraryService {
     // offscreen in Main through the injected documentThumbnailRenderer.
     // Both are enqueued like any other asset — the enqueue gate must list the
     // document extensions (see enqueueThumbnailJobs supportedExtensions).
-    if (mediaType === 'document' && ext === '.pdf') {
+    if (mediaType === 'document' && (ext === '.pdf' || ext === '.ai')) {
       return this.generatePdfThumbnail(input, openLibrary, assetPath, revisionId, execution);
     }
     if (mediaType === 'document') {
@@ -23185,8 +23542,8 @@ export class LibraryService {
   }
 
   /**
-   * Serpent-8ca259: render the first page of a PDF to a standard thumbnail
-   * artifact with pdfjs-dist (pure JS) + @napi-rs/canvas (NAPI, no node-gyp).
+   * Render the first page of a PDF, or PDF-compatible AI file, to a standard
+   * thumbnail artifact with pdfjs-dist + @napi-rs/canvas.
    * The render result is written through the same revision_artifacts pipeline
    * as image thumbnails, so cards/Inspector/hover work unchanged.
    */
@@ -23204,6 +23561,12 @@ export class LibraryService {
     const artifactAbsPath = path.join(artifactsDir, artifactRelPath);
 
     try {
+      if (
+        path.extname(assetPath).toLowerCase() === '.ai'
+        && !hasPdfCompatibleIllustratorHeader(assetPath)
+      ) {
+        throw new Error('Illustrator file has no PDF-compatible representation.');
+      }
       const pdfBytes = readFileSync(assetPath);
       if (pdfBytes.length === 0) {
         throw new Error('PDF file is empty.');
@@ -25438,6 +25801,86 @@ export class LibraryService {
     }
   }
 
+  /**
+   * Remember whether audio cards should prefer cover art, and queue a rebuild
+   * for grid thumbnails that would show a different image.
+   */
+  setAudioPreviewPrefersCover(libraryId: string, preferCover: boolean): number {
+    this.audioPreviewPrefersCover = preferCover;
+    const openLibrary = this.requireOpenLibrary(libraryId);
+    const audioExtensionSql = AUDIO_EXTENSION_NAMES
+      .map(() => 'LOWER(a.relative_file_path) LIKE ?')
+      .join(' OR ');
+    const rows = openLibrary.connection
+      .prepare(
+        `SELECT a.asset_id, a.current_revision_id, ra.artifact_id,
+                ra.mime_type, ra.width, ra.height, ra.generator_version
+           FROM assets a
+           JOIN revision_artifacts ra ON ra.revision_id = a.current_revision_id
+          WHERE a.deleted_at IS NULL
+            AND a.availability = 'available'
+            AND a.current_revision_id IS NOT NULL
+            AND (${audioExtensionSql})
+            AND ra.kind = 'thumbnail'
+            AND ra.status = 'ready'
+            AND ra.invalidated_at IS NULL`,
+      )
+      .all(...AUDIO_EXTENSION_NAMES.map((extension) => `%.${extension}`)) as Array<{
+        asset_id: string;
+        current_revision_id: string;
+        artifact_id: string;
+        mime_type: string;
+        width: number | null;
+        height: number | null;
+        generator_version: string;
+      }>;
+    const stale = rows.filter((row) => audioGridThumbnailNeedsRebuild({
+      preferCover,
+      mimeType: row.mime_type,
+      width: row.width,
+      height: row.height,
+      generatorVersion: row.generator_version,
+    }));
+    if (stale.length === 0) return 0;
+    const now = new Date().toISOString();
+    const invalidate = openLibrary.connection.prepare(
+      `UPDATE revision_artifacts
+          SET invalidated_at = ?
+        WHERE artifact_id = ?
+          AND invalidated_at IS NULL`,
+    );
+    const activeJob = openLibrary.connection.prepare(
+      `SELECT 1 FROM jobs
+        WHERE asset_id = ?
+          AND kind = 'generate_thumbnail'
+          AND status IN ('queued', 'running', 'paused')
+        LIMIT 1`,
+    );
+    const insert = openLibrary.connection.prepare(
+      `INSERT INTO jobs
+         (job_id, library_id, asset_id, revision_id, kind, status, priority, progress,
+          attempt_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'generate_thumbnail', 'queued', 200, 0.0, 0, ?, ?)`,
+    );
+    let enqueued = 0;
+    openLibrary.connection.transaction(() => {
+      for (const row of stale) {
+        invalidate.run(now, row.artifact_id);
+        if (activeJob.get(row.asset_id)) continue;
+        insert.run(
+          randomUUID(),
+          libraryId,
+          row.asset_id,
+          row.current_revision_id,
+          now,
+          now,
+        );
+        enqueued += 1;
+      }
+    })();
+    return enqueued;
+  }
+
   // ── Audio artifacts (ffprobe + waveform thumbnail) ─────────────────
 
   /**
@@ -25470,8 +25913,9 @@ export class LibraryService {
       this.diagnose('audio-probe', error, { libraryId: input.libraryId, assetId: input.assetId });
     }
 
+    const preferCover = this.audioPreviewPrefersCover;
     let thumbnailArtifactId: string | null = null;
-    if (hasAttachedPicture) {
+    if (preferCover && hasAttachedPicture) {
       try {
         thumbnailArtifactId = await this.generateAudioAlbumCoverThumbnail(
           input,
@@ -25507,6 +25951,7 @@ export class LibraryService {
             width: AUDIO_WAVEFORM_COVER_WIDTH,
             height: AUDIO_WAVEFORM_COVER_HEIGHT,
             flattenBackground: { ...AUDIO_WAVEFORM_COVER_BACKGROUND },
+            forcedWaveform: hasAttachedPicture && !preferCover,
           },
         );
       } catch (error) {
@@ -25566,7 +26011,7 @@ export class LibraryService {
     ffmpegPath: string,
     artifactsDir: string,
     execution: MediaExecutionContext,
-  ): Promise<string> {
+  ): Promise<string | null> {
     const artifactId = randomUUID();
     let artifactRelPath = `${artifactId}.jpg`;
     let artifactAbsPath = path.join(artifactsDir, artifactRelPath);
@@ -25647,6 +26092,10 @@ export class LibraryService {
       rmSync(tempAbsPath, { force: true });
 
       const outputStat = statSync(artifactAbsPath);
+      if (!this.audioPreviewPrefersCover) {
+        rmSync(artifactAbsPath, { force: true });
+        return null;
+      }
       openLibrary.connection
         .prepare(
           `INSERT INTO revision_artifacts
@@ -25691,6 +26140,7 @@ export class LibraryService {
       width: number;
       height: number;
       flattenBackground: { r: number; g: number; b: number };
+      forcedWaveform?: boolean;
     },
   ): Promise<string> {
     const artifactId = randomUUID();
@@ -25746,7 +26196,9 @@ export class LibraryService {
           artifactRelPath,
           options.width,
           options.height,
-          AUDIO_WAVEFORM_GENERATOR,
+          options.forcedWaveform
+            ? `${AUDIO_WAVEFORM_GENERATOR}+${AUDIO_FORCED_WAVEFORM_GENERATOR_MARK}`
+            : AUDIO_WAVEFORM_GENERATOR,
           new Date().toISOString(),
         );
 
@@ -27716,6 +28168,9 @@ export class LibraryService {
       // the real TIFF E2E to expose the wrong raster size. This is an output
       // presentation size, not a source acceptance or processing limit.
       const resizeArgs = isViewerImage ? [] : ['--fit', '512x512'];
+      // Chromium <img> does not paint 16-bit PNG. Card and viewer outputs are
+      // display files, so force 8-bit before writing the PNG.
+      const displayDepthArgs = ['-d', 'uint8'];
 
       if (isRawAsset && !isViewerImage) {
         const embeddedThumbnail = await this.tryGenerateRawEmbeddedThumbnail(
@@ -27740,6 +28195,7 @@ export class LibraryService {
             '--subimage', String(subimage),
             assetPath,
             ...resizeArgs,
+            ...displayDepthArgs,
             '-o', artifactAbsPath,
           ]
         : [
@@ -27756,6 +28212,7 @@ export class LibraryService {
               : '--ociodisplay:unpremult=1',
             '', '',
             ...resizeArgs,
+            ...displayDepthArgs,
             '-o', artifactAbsPath,
           ];
 
@@ -27787,10 +28244,10 @@ export class LibraryService {
         )
         .run(artifactId, revisionId, artifactKind, outputStat.size, artifactRelPath,
           isRawAsset
-            ? `oiio@${OIIO_VERSION};raw-${isViewerImage ? 'viewer-full' : 'default'}-srgb;subimage=${subimage}`
+            ? `oiio@${OIIO_VERSION};raw-${isViewerImage ? 'viewer-full' : 'default'}-srgb;subimage=${subimage};display-uint8`
             : isIcoAsset
-              ? `oiio@${OIIO_VERSION};ico-largest-v1;subimage=${subimage}`
-              : `oiio@${OIIO_VERSION};${isViewerImage ? 'viewer-full;' : ''}ocio=studio-v4-aces2;colorspace=${inputColorSpace ?? 'auto'};exposure=${exposureStops};subimage=${subimage}`,
+              ? `oiio@${OIIO_VERSION};ico-largest-v1;subimage=${subimage};display-uint8`
+              : `oiio@${OIIO_VERSION};${isViewerImage ? 'viewer-full;' : ''}ocio=studio-v4-aces2;colorspace=${inputColorSpace ?? 'auto'};exposure=${exposureStops};subimage=${subimage};display-uint8`,
           new Date().toISOString());
       if (rawMetadata) {
         await this.persistRawImageMetadata(openLibrary, input.assetId, revisionId, assetPath, rawMetadata, {
@@ -28777,12 +29234,24 @@ export class LibraryService {
       };
     }
 
-    // Serpent-8ca259: PDF/HTML documents open the original source through
-    // serpent://source (Main serves the file); the renderer previews them with
-    // pdfjs / an embedded browser. No thumbnail job is required to open.
+    // PDF/HTML documents and PDF-compatible AI files open the original source
+    // through serpent://source; the renderer previews them with pdfjs / an
+    // embedded browser. No thumbnail job is required to open.
     if (mediaType === 'document' && asset.current_revision_id) {
       const extension = path.extname(asset.relative_file_path).toLowerCase();
-      const documentMime = extension === '.pdf'
+      if (
+        extension === '.ai'
+        && !hasPdfCompatibleIllustratorHeader(this.resolveAssetPath(libraryId, assetId))
+      ) {
+        return {
+          mediaType,
+          status: 'missing',
+          kind,
+          mimeType: 'application/octet-stream',
+          errorCode: 'UNSUPPORTED_FORMAT',
+        };
+      }
+      const documentMime = extension === '.pdf' || extension === '.ai'
         ? 'application/pdf'
         : extension === '.html' || extension === '.htm'
           ? 'text/html'
@@ -28880,8 +29349,8 @@ export class LibraryService {
     if (mediaType === 'video' || mediaType === 'audio') {
       // Serpent-cljb: source playback is the viewer starting point for
       // Chromium-playable containers (mp4/webm/m4v). Other containers
-      // (mov/avi/wmv/mkv) are not a playback guarantee; a ready proxy is the
-      // viewer URL so generating a proxy actually unblocks preview.
+      // (mov/avi/wmv/mkv/flv) are not a playback guarantee; a ready proxy is
+      // the viewer URL so generating a proxy actually unblocks preview.
       // Hover (Serpent-c8a1a3): a ready proxy wins for every video so
       // undecodable containers can still preview in-place.
       if (mediaType === 'video' && intent !== 'proxy-fallback' && asset.current_revision_id) {
@@ -29605,9 +30074,10 @@ export class LibraryService {
       '.aac': 'audio/aac',
       '.flac': 'audio/flac',
       '.opus': 'audio/ogg',
-      // Serpent-8ca259: PDF/HTML source responses need their real MIME so the
-      // renderer can present them (pdfjs / iframe) instead of downloading.
+      // PDF/HTML and PDF-compatible AI source responses need their real MIME
+      // so the renderer can present them (pdfjs / iframe) instead of download.
       '.pdf': 'application/pdf',
+      '.ai': 'application/pdf',
       '.html': 'text/html; charset=utf-8',
       '.htm': 'text/html; charset=utf-8',
     };
@@ -31109,6 +31579,7 @@ export class LibraryService {
                 OR LOWER(a.relative_file_path) LIKE '%.wmv'
                 OR LOWER(a.relative_file_path) LIKE '%.mkv'
                 OR LOWER(a.relative_file_path) LIKE '%.m4v'
+                OR LOWER(a.relative_file_path) LIKE '%.flv'
               THEN 'video_poster'
               ELSE 'thumbnail'
             END
@@ -31258,14 +31729,14 @@ export class LibraryService {
     // even though `assetSupportsThumbnail` declares them thumbnail-capable.
     const supportedExtensions = [
       ...IMAGE_EXTENSIONS.map((extension) => extension.slice(1)),
-      'mp4', 'webm', 'mov', 'avi', 'wmv', 'mkv', 'm4v',
+      ...VIDEO_EXTENSIONS.map((extension) => extension.slice(1)),
       ...AUDIO_EXTENSION_NAMES,
       ...MODEL_EXTENSIONS.map((extension) => extension.slice(1)),
       ...DOCUMENT_EXTENSIONS.map((extension) => extension.slice(1)),
       // Serpent-485aeb: font cards render a real sample line offscreen in Main.
       ...FONT_EXTENSIONS.map((extension) => extension.slice(1)),
     ];
-    const videoExtensions = ['mp4', 'webm', 'mov', 'avi', 'wmv', 'mkv', 'm4v'];
+    const videoExtensions = VIDEO_EXTENSIONS.map((extension) => extension.slice(1));
     const nowInvalidate = new Date().toISOString();
     if (options.skipStaleRepair) {
       // Background fill only inserts missing generate_thumbnail rows.
@@ -31836,6 +32307,8 @@ export class LibraryService {
       this.modelAiViewsRenderer = options.modelAiViewsRenderer;
     }
     const openLibrary = this.requireOpenLibrary(libraryId);
+    this.cancelQueuedHiddenSequenceMemberJobs(openLibrary);
+    this.repairUndisplayablePngThumbnails(openLibrary);
     const jobKinds = options.jobKinds ?? MEDIA_JOB_KINDS;
     if (jobKinds.length === 0) return 0;
     if (options.signal?.aborted) return 0;
@@ -33513,21 +33986,10 @@ export class LibraryService {
           AND palette_meta.invalidated_at IS NULL`
       : '';
     const technicalThumbnailJoin = needsTechnicalThumbnail
-      ? `LEFT JOIN revision_artifacts technical_thumbnail
-           ON technical_thumbnail.revision_id = a.current_revision_id
-          AND technical_thumbnail.kind = CASE
-            WHEN LOWER(a.relative_file_path) LIKE '%.mp4'
-              OR LOWER(a.relative_file_path) LIKE '%.webm'
-              OR LOWER(a.relative_file_path) LIKE '%.mov'
-              OR LOWER(a.relative_file_path) LIKE '%.avi'
-              OR LOWER(a.relative_file_path) LIKE '%.wmv'
-              OR LOWER(a.relative_file_path) LIKE '%.mkv'
-              OR LOWER(a.relative_file_path) LIKE '%.m4v'
-            THEN 'video_poster'
-            ELSE 'thumbnail'
-          END
-          ${artifactColumns.has('status') ? "AND technical_thumbnail.status = 'ready'" : ''}
-          AND technical_thumbnail.invalidated_at IS NULL`
+      ? singleDisplayArtifactJoin(
+          'technical_thumbnail',
+          artifactColumns.has('status') ? "AND chosen.status = 'ready'" : '',
+        )
       : '';
     const searchJoins = hasQuery && hasSearchIndex
       ? `JOIN asset_search_index sc ON a.asset_id = sc.asset_id
@@ -33541,21 +34003,10 @@ export class LibraryService {
           AND layout_metadata.kind = 'extracted_metadata'
           ${artifactColumns.has('status') ? "AND layout_metadata.status = 'ready'" : ''}
           AND layout_metadata.invalidated_at IS NULL
-         LEFT JOIN revision_artifacts layout_preview
-           ON layout_preview.revision_id = a.current_revision_id
-          AND layout_preview.kind = CASE
-            WHEN LOWER(a.relative_file_path) LIKE '%.mp4'
-              OR LOWER(a.relative_file_path) LIKE '%.webm'
-              OR LOWER(a.relative_file_path) LIKE '%.mov'
-              OR LOWER(a.relative_file_path) LIKE '%.avi'
-              OR LOWER(a.relative_file_path) LIKE '%.wmv'
-              OR LOWER(a.relative_file_path) LIKE '%.mkv'
-              OR LOWER(a.relative_file_path) LIKE '%.m4v'
-            THEN 'video_poster'
-            ELSE 'thumbnail'
-          END
-          ${artifactColumns.has('status') ? "AND layout_preview.status = 'ready'" : ''}
-          AND layout_preview.invalidated_at IS NULL`
+         ${singleDisplayArtifactJoin(
+            'layout_preview',
+            artifactColumns.has('status') ? "AND chosen.status = 'ready'" : '',
+          )}`
       : '';
     const collectionScopeJoin = collectionScope?.join ?? '';
     const dataFrom = `FROM assets a
@@ -39271,6 +39722,7 @@ export class LibraryService {
                     OR LOWER(a.relative_file_path) LIKE '%.wmv'
                     OR LOWER(a.relative_file_path) LIKE '%.mkv'
                     OR LOWER(a.relative_file_path) LIKE '%.m4v'
+                    OR LOWER(a.relative_file_path) LIKE '%.flv'
                   THEN 'video_poster'
                   ELSE 'thumbnail'
                 END
@@ -41407,6 +41859,7 @@ export class LibraryService {
              OR LOWER(a.relative_file_path) LIKE '%.wmv'
              OR LOWER(a.relative_file_path) LIKE '%.mkv'
              OR LOWER(a.relative_file_path) LIKE '%.m4v'
+             OR LOWER(a.relative_file_path) LIKE '%.flv'
            THEN 'video_poster'
            ELSE 'thumbnail'
          END
@@ -41489,6 +41942,7 @@ export class LibraryService {
                 OR LOWER(a.relative_file_path) LIKE '%.wmv'
                 OR LOWER(a.relative_file_path) LIKE '%.mkv'
                 OR LOWER(a.relative_file_path) LIKE '%.m4v'
+                OR LOWER(a.relative_file_path) LIKE '%.flv'
               THEN 'video_poster'
               ELSE 'thumbnail'
             END

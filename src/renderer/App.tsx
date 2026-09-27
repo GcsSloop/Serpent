@@ -317,6 +317,8 @@ import { MediaJobsDialog } from "./MediaJobsDialog";
 import { PluginJobActivityBanner } from "./PluginJobActivityBanner";
 import { AiConnectionFailureDialog } from "./AiConnectionFailureDialog";
 import { FatalAlertDialog } from "./FatalAlertDialog";
+import { CriticalConfirmationDialog } from "./CriticalConfirmationDialog";
+import { useCriticalConfirmationPrompt } from "./use-critical-confirmation-prompt";
 import { useAiConnectionFailure } from "./use-ai-connection-failure";
 import {
   countOtherLivePluginJobs,
@@ -531,6 +533,14 @@ import {
   shouldShowGridDimensions,
   type CanvasPreferences,
 } from "./canvas-preferences";
+import {
+  loadAudioPreviewPreferences,
+  saveAudioPreviewPreferences,
+} from "./audio-preview-preferences";
+import {
+  loadImageRotationPreferences,
+  saveImageRotationPreferences,
+} from "./image-rotation-preferences";
 import {
   loadBrowseSortPreferences,
   saveBrowseSortPreferences,
@@ -920,6 +930,28 @@ function AppInner() {
         : undefined,
     [beginLibraryWrite, endLibraryWrite, libraryTransitionLock, rawLibraryApi],
   );
+  const [audioPreviewPrefersCover, setAudioPreviewPrefersCover] = useState(
+    () => loadAudioPreviewPreferences().preferCover,
+  );
+  const applyAudioPreviewPreference = useCallback((preferCover: boolean) => {
+    saveAudioPreviewPreferences({ version: 1, preferCover });
+    setAudioPreviewPrefersCover(preferCover);
+  }, []);
+  const [bakeImageRotation, setBakeImageRotation] = useState(
+    () => loadImageRotationPreferences().bakeIntoFile,
+  );
+  const applyBakeImageRotation = useCallback((bakeIntoFile: boolean) => {
+    saveImageRotationPreferences({ version: 1, bakeIntoFile });
+    setBakeImageRotation(bakeIntoFile);
+  }, []);
+  const libraryIdForAudioPreview = library?.libraryId;
+  useEffect(() => {
+    if (!api || !libraryIdForAudioPreview) return;
+    void api.setAudioPreviewPreference({
+      libraryId: libraryIdForAudioPreview,
+      preferCover: audioPreviewPrefersCover,
+    });
+  }, [api, audioPreviewPrefersCover, libraryIdForAudioPreview]);
   // Keep AI readiness (hasKey) in sync without requiring the settings dialog.
   useEffect(() => {
     if (!api) return;
@@ -6730,6 +6762,54 @@ function AppInner() {
     await refreshInspectorTagStateAfterBatch();
   }
 
+  async function handleInspectorApplyTagNames(tagNames: string[]) {
+    if (!api || !library || tagNames.length === 0) return;
+    const target = resolveInspectorTagTarget(selectedAssetIds, selectedAssetId);
+    if (!target) return;
+    const assetIds = target.kind === "single" ? [target.assetId] : target.assetIds;
+    try {
+      const tagIds: string[] = [];
+      let createdCount = 0;
+      let createdName = "";
+      for (const name of tagNames) {
+        const existing = tags.find(
+          (tag) => tag.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+        );
+        if (existing) {
+          tagIds.push(existing.tagId);
+          continue;
+        }
+        const createResult = await api.createTag({
+          libraryId: library.libraryId,
+          name,
+        });
+        if (!createResult.ok) throw new LibraryOperationError(createResult.error);
+        tagIds.push(createResult.value.tagId);
+        createdCount += 1;
+        createdName = createResult.value.name;
+      }
+      const assignResult = await api.assignTags({
+        libraryId: library.libraryId,
+        assetIds,
+        tagIds,
+      });
+      if (!assignResult.ok) throw new LibraryOperationError(assignResult.error);
+      if (target.kind === "single") {
+        await refreshTagAndMetadataState(target.assetId);
+      } else {
+        await refreshInspectorTagStateAfterBatch();
+      }
+      const notice = tagNames.length > 1
+        ? t("toast.tagsAppliedCount", { count: tagNames.length })
+        : createdCount === 1
+          ? t("toast.tagCreatedAssigned", { name: createdName })
+          : t("toast.tagAdded");
+      setNotice(notice, assignResult.value.historyEntryId);
+    } catch (caught) {
+      setError(toMessage(caught, t("toast.addTagFailed"), locale));
+    }
+  }
+
   // --- Collection CRUD ---
 
   async function createCollection() {
@@ -11078,6 +11158,8 @@ function AppInner() {
     },
   });
 
+  const criticalConfirmation = useCriticalConfirmationPrompt(shellApi);
+
   const dialogFocusTrapActive = Boolean(
     dialog ||
       conflicts ||
@@ -11111,7 +11193,8 @@ function AppInner() {
       Boolean(
         exportProgress &&
           !["complete", "cancelled", "failed"].includes(exportProgress.phase),
-      ),
+      ) ||
+      criticalConfirmation.request !== null,
   );
   useDialogFocusTrap(
     dialogFocusTrapActive,
@@ -14513,6 +14596,7 @@ function AppInner() {
             ref={previewModalRef}
             api={api}
             asset={previewAsset}
+            bakeImageRotation={bakeImageRotation}
             chromeIdle={viewerChromeIdle}
             libraryId={library.libraryId}
             onChromeActivity={onViewerChromeActivity}
@@ -14573,6 +14657,7 @@ function AppInner() {
         loadMetadata={loadMetadata}
         onAssignTagToAsset={(tagId) => void handleInspectorAssignTag(tagId)}
         onCreateAndAssignTag={(tagName) => void handleInspectorCreateAndAssignTag(tagName)}
+        onApplyTagNames={(tagNames) => void handleInspectorApplyTagNames(tagNames)}
         onOpenSourceUrl={handleOpenSourceUrl}
         onPaletteColorCopy={(color, copied) => {
           if (copied) {
@@ -14835,6 +14920,10 @@ function AppInner() {
         onToggleHoverVideoSound={() => {
           setCanvasPrefs((p) => ({ ...p, hoverVideoSound: !p.hoverVideoSound }));
         }}
+        audioPreviewPrefersCover={audioPreviewPrefersCover}
+        onAudioPreviewPrefersCoverChange={applyAudioPreviewPreference}
+        bakeImageRotation={bakeImageRotation}
+        onBakeImageRotationChange={applyBakeImageRotation}
         onToggleShowAiBadges={() => {
           setAiUiPrefs((p) => ({ ...p, showAiBadges: !p.showAiBadges }));
         }}
@@ -15268,6 +15357,10 @@ function AppInner() {
         onConfirm={fatalAlertAlreadyOpen ? confirmAlreadyOpenLibrarySwitch : undefined}
         onDismiss={fatalAlertAlreadyOpen ? dismissAlreadyOpenPrompt : dismissFatalAlert}
         onSwitchLibrary={fatalAlertAlreadyOpen ? undefined : openLibraryChooserFromError}
+      />
+      <CriticalConfirmationDialog
+        onDecide={criticalConfirmation.decide}
+        request={criticalConfirmation.request}
       />
       <MediaJobsDialog
         open={mediaJobsOpen && library !== null}

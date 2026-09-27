@@ -62,6 +62,8 @@ import { isLibraryRootFolderId } from "../shared/library-root-folder";
 import {
   buildUnifiedDirectoryNavEntries,
   filterCollapsedDirectoryEntries,
+  filterCollectionTreeByName,
+  filterDirectoryEntriesByName,
   folderIdsInSubtree,
   managedFolderIdsWithChildren,
   sortCollectionTree,
@@ -531,6 +533,7 @@ function Section({
   onSecondaryActionMouseEnter,
   onSecondaryActionMouseLeave,
   extraAction,
+  search,
   children,
 }: {
   title: string;
@@ -548,15 +551,40 @@ function Section({
   onSecondaryActionMouseLeave?: () => void;
   /** Extra leading action node rendered first in the heading action group. */
   extraAction?: ReactNode;
+  /** Search control sitting immediately to the right of the section title. */
+  search?: {
+    open: boolean;
+    query: string;
+    label: string;
+    placeholder: string;
+    onToggle: () => void;
+    onQueryChange: (value: string) => void;
+    onClose: () => void;
+  };
   children: ReactNode;
 }) {
   const t = useT();
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const primaryLabel = actionLabel ?? t("nav.addSection", { title });
   const linkLabel = secondaryLabel ?? t("nav.secondaryAction", { title });
+  useEffect(() => {
+    if (!search?.open) return;
+    searchInputRef.current?.focus();
+  }, [search?.open]);
   return (
     <section className="nav-section">
       <div className="nav-section-heading">
-        <span>{title}</span>
+        <span className="nav-section-title-row">
+          <span>{title}</span>
+          {search ? (
+            <IconActionButton
+              className={search.open ? "tiny-action is-active" : "tiny-action"}
+              icon="search"
+              label={search.label}
+              onClick={search.onToggle}
+            />
+          ) : null}
+        </span>
         {(action || secondaryAction || toggleAction || extraAction) && (
           <span className="nav-section-actions">
             {extraAction}
@@ -587,6 +615,38 @@ function Section({
           </span>
         )}
       </div>
+      {search ? (
+        <div
+          className={`nav-section-search-slot${search.open ? " is-open" : ""}`}
+          aria-hidden={search.open ? undefined : true}
+        >
+          <div className="nav-section-search-clip">
+            <input
+              aria-label={search.label}
+              className="nav-section-search"
+              onChange={(event) => search.onQueryChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                if (
+                  shouldHoldDismissForIme({
+                    composing: event.nativeEvent.isComposing,
+                    keyEvent: event,
+                  })
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                search.onClose();
+              }}
+              placeholder={search.placeholder}
+              ref={searchInputRef}
+              tabIndex={search.open ? 0 : -1}
+              value={search.query}
+            />
+          </div>
+        </div>
+      ) : null}
       {children}
     </section>
   );
@@ -1085,6 +1145,10 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   );
   const [collectionSortPrefs, setCollectionSortPrefs] =
     useState<CollectionSortPreferences>(() => loadCollectionSortPreferences());
+  const [folderSearchOpen, setFolderSearchOpen] = useState(false);
+  const [folderSearchQuery, setFolderSearchQuery] = useState("");
+  const [collectionSearchOpen, setCollectionSearchOpen] = useState(false);
+  const [collectionSearchQuery, setCollectionSearchQuery] = useState("");
   function changeFolderSort(mode: FolderTreeSortMode, order: FolderSortOrder) {
     const next = withFolderSort(folderSortPrefs, { mode, order });
     setFolderSortPrefs(next);
@@ -1095,6 +1159,26 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     const next = withCollectionSort(collectionSortPrefs, { mode, order });
     setCollectionSortPrefs(next);
     saveCollectionSortPreferences(next);
+  }
+  function toggleFolderSearch() {
+    setFolderSearchOpen((open) => {
+      if (open) setFolderSearchQuery("");
+      return !open;
+    });
+  }
+  function closeFolderSearch() {
+    setFolderSearchOpen(false);
+    setFolderSearchQuery("");
+  }
+  function toggleCollectionSearch() {
+    setCollectionSearchOpen((open) => {
+      if (open) setCollectionSearchQuery("");
+      return !open;
+    });
+  }
+  function closeCollectionSearch() {
+    setCollectionSearchOpen(false);
+    setCollectionSearchQuery("");
   }
   useEffect(() => {
     if (!assetDropTarget && !folderListDropActive && !collectionListDropActive) return;
@@ -1620,14 +1704,15 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     };
   }
 
-  const directoryEntries = filterCollapsedDirectoryEntries(
-    sortManagedTreeEntries(
-      unifiedDirectoryEntries,
-      folderSortPrefs.mode,
-      folderSortPrefs.order,
-    ),
-    collapsedFolderIds,
+  const sortedDirectoryEntries = sortManagedTreeEntries(
+    unifiedDirectoryEntries,
+    folderSortPrefs.mode,
+    folderSortPrefs.order,
   );
+  const folderSearchActive = folderSearchQuery.trim().length > 0;
+  const directoryEntries = folderSearchActive
+    ? filterDirectoryEntriesByName(sortedDirectoryEntries, folderSearchQuery)
+    : filterCollapsedDirectoryEntries(sortedDirectoryEntries, collapsedFolderIds);
   const foldersWithChildren = managedFolderIdsWithChildren(
     unifiedDirectoryEntries,
   );
@@ -1636,10 +1721,23 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     collectionSortPrefs.mode,
     collectionSortPrefs.order,
   );
+  const collectionSearchActive = collectionSearchQuery.trim().length > 0;
+  const visibleCollectionTree = collectionSearchActive
+    ? filterCollectionTreeByName(sortedCollectionTree, collectionSearchQuery)
+    : sortedCollectionTree;
+
+  function collectionRowCollapsed(collectionId: string): boolean {
+    if (collectionSearchActive) return false;
+    return collapsedCollectionIds.has(collectionId);
+  }
 
   function renderDirectoryEntries(): ReactNode {
     if (directoryEntries.length === 0 && inlineFolderEdit?.kind !== "create") {
-      return <p className="nav-empty">{t("nav.emptyManagedOrLinked")}</p>;
+      return (
+        <p className="nav-empty">
+          {folderSearchActive ? t("nav.searchEmpty") : t("nav.emptyManagedOrLinked")}
+        </p>
+      );
     }
 
     const rows: ReactNode[] = directoryEntries.map((entry) => {
@@ -1991,7 +2089,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     parentId: string | null,
     depth: number,
   ): ReactNode {
-    const children = sortedCollectionTree.get(parentId) ?? [];
+    const children = visibleCollectionTree.get(parentId) ?? [];
     const rows: ReactNode[] = [];
     if (showCollectionInput && newCollectionParentId === parentId) {
       rows.push(
@@ -2129,16 +2227,16 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         ) : (
           <NavRow
             disclosure={
-              (sortedCollectionTree.get(c.collectionId) ?? []).length > 0 ? (
+              (visibleCollectionTree.get(c.collectionId) ?? []).length > 0 ? (
                 <button
-                  aria-expanded={!collapsedCollectionIds.has(c.collectionId)}
+                  aria-expanded={!collectionRowCollapsed(c.collectionId)}
                   aria-label={
-                    collapsedCollectionIds.has(c.collectionId)
+                    collectionRowCollapsed(c.collectionId)
                       ? t("nav.expandCollection", { name: c.name })
                       : t("nav.collapseCollection", { name: c.name })
                   }
                   className={`nav-disclosure${
-                    collapsedCollectionIds.has(c.collectionId) ? "" : " is-expanded"
+                    collectionRowCollapsed(c.collectionId) ? "" : " is-expanded"
                   }`}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -2224,7 +2322,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             onClick={() => void onChooseCollection(c.collectionId)}
           />
         )}
-        {!collapsedCollectionIds.has(c.collectionId) &&
+        {!collectionRowCollapsed(c.collectionId) &&
           renderCollectionNodes(c.collectionId, depth + 1)}
       </div>
     )));
@@ -2368,6 +2466,19 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         ))}
         <Section
           title={t("nav.folders")}
+          search={
+            library
+              ? {
+                  open: folderSearchOpen,
+                  query: folderSearchQuery,
+                  label: t("nav.searchFolders"),
+                  placeholder: t("nav.searchNamePlaceholder"),
+                  onToggle: toggleFolderSearch,
+                  onQueryChange: setFolderSearchQuery,
+                  onClose: closeFolderSearch,
+                }
+              : undefined
+          }
           action={library ? onAddFolder : undefined}
           actionLabel={t("nav.addFolder")}
           toggleAction={library ? onToggleShowIgnoredItems : undefined}
@@ -2406,6 +2517,19 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         </Section>
         <Section
           title={t("nav.collections")}
+          search={
+            library
+              ? {
+                  open: collectionSearchOpen,
+                  query: collectionSearchQuery,
+                  label: t("nav.searchCollections"),
+                  placeholder: t("nav.searchNamePlaceholder"),
+                  onToggle: toggleCollectionSearch,
+                  onQueryChange: setCollectionSearchQuery,
+                  onClose: closeCollectionSearch,
+                }
+              : undefined
+          }
           action={
             library
               ? () => onAddCollection(null)
@@ -2429,7 +2553,13 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               {...collectionListBlankHandlers()}
             >
               {collections.length ? (
-                renderCollectionNodes(null, 0)
+                collectionSearchActive &&
+                (visibleCollectionTree.get(null)?.length ?? 0) === 0 &&
+                !(showCollectionInput && newCollectionParentId === null) ? (
+                  <p className="nav-empty">{t("nav.searchEmpty")}</p>
+                ) : (
+                  renderCollectionNodes(null, 0)
+                )
               ) : (
                 showCollectionInput && newCollectionParentId === null ? (
                   renderCollectionNodes(null, 0)

@@ -369,3 +369,70 @@ export function sortCollectionTree(
   }
   return sorted;
 }
+
+function normalizedNavQuery(query: string): string {
+  return query.trim().toLocaleLowerCase();
+}
+
+/**
+ * Keep a row when its name contains the query, and keep every ancestor so the
+ * match stays attached to the tree. An empty query returns the input order.
+ */
+export function filterDirectoryEntriesByName(
+  entries: readonly UnifiedDirectoryNavEntry[],
+  query: string,
+): UnifiedDirectoryNavEntry[] {
+  const needle = normalizedNavQuery(query);
+  if (!needle) return [...entries];
+  const byId = new Map(entries.map((entry) => [entry.folderId, entry]));
+  const keep = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.name.toLocaleLowerCase().includes(needle)) continue;
+    let current: UnifiedDirectoryNavEntry | undefined = entry;
+    while (current) {
+      if (keep.has(current.folderId)) break;
+      keep.add(current.folderId);
+      const parentId = current.parentFolderId;
+      current = parentId ? byId.get(parentId) : undefined;
+    }
+  }
+  return entries.filter((entry) => keep.has(entry.folderId));
+}
+
+/**
+ * Same name match as folders: a collection stays when it matches or when a
+ * descendant matches. Parent groups with no remaining children are dropped.
+ */
+export function filterCollectionTreeByName(
+  tree: ReadonlyMap<string | null, readonly CollectionSummary[]>,
+  query: string,
+): Map<string | null, CollectionSummary[]> {
+  const needle = normalizedNavQuery(query);
+  if (!needle) {
+    return new Map(
+      [...tree].map(([parentId, children]) => [parentId, [...children]]),
+    );
+  }
+  const parentOf = new Map<string, string | null>();
+  for (const [parentId, children] of tree) {
+    for (const child of children) parentOf.set(child.collectionId, parentId);
+  }
+  const keep = new Set<string>();
+  for (const children of tree.values()) {
+    for (const child of children) {
+      if (!child.name.toLocaleLowerCase().includes(needle)) continue;
+      let current: string | null = child.collectionId;
+      while (current) {
+        if (keep.has(current)) break;
+        keep.add(current);
+        current = parentOf.get(current) ?? null;
+      }
+    }
+  }
+  const next = new Map<string | null, CollectionSummary[]>();
+  for (const [parentId, children] of tree) {
+    const filtered = children.filter((child) => keep.has(child.collectionId));
+    if (filtered.length > 0) next.set(parentId, filtered);
+  }
+  return next;
+}

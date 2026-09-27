@@ -9,6 +9,19 @@ export function executeMediaJobMainCommand(
         type: "media.job-summary",
         libraryId: request.libraryId,
       };
+    case "media.set-audio-preview-preference.request":
+      return {
+        type: "media.set-audio-preview-preference",
+        libraryId: request.libraryId,
+        preferCover: request.preferCover,
+      };
+    case "asset.rotate-image-content.request":
+      return {
+        type: "asset.rotate-image-content",
+        libraryId: request.libraryId,
+        assetId: request.assetId,
+        direction: request.direction,
+      };
     case "media.list-jobs.request":
       return {
         type: "media.list-jobs",

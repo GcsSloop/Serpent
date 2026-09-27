@@ -557,19 +557,11 @@ test('multi-select performs batch organization, trash, restore, and permanent de
     await window.locator('.asset-card').last().click({ modifiers: [additiveModifier] });
     await window.locator('.asset-card').first().click({ button: 'right' });
     await window.getByRole('menuitem', { name: /永久删除（2 项）/ }).click();
-    const windowCountBeforeCritical = application.windows().length;
-    await expect
-      .poll(() => application.windows().length, { timeout: 5_000 })
-      .toBeGreaterThan(windowCountBeforeCritical);
-    const permanentDeleteWindow = application.windows().at(-1)!;
-    await expect(
-      permanentDeleteWindow.getByRole('heading', { name: '永久删除这些回收站资产？' }),
-    ).toBeVisible();
-    await expect(permanentDeleteWindow.locator('button.confirm')).toBeVisible();
-    await permanentDeleteWindow
+    const permanentDeleteDialog = window.getByRole('dialog', { name: '永久删除这些回收站资产？' });
+    await expect(permanentDeleteDialog).toBeVisible({ timeout: 10_000 });
+    await permanentDeleteDialog
       .getByRole('button', { name: '永久删除', exact: true })
-      .click()
-      .catch(() => undefined);
+      .click();
     await expect(window.locator('.workspace-notice')).toContainText('已永久删除 2 项');
     await expect(window.locator('.asset-card')).toHaveCount(0);
   } finally {
@@ -613,20 +605,14 @@ test('critical confirmation windows focus cancel and require red confirmation', 
     await expect(trashedAsset).toBeVisible();
     await trashedAsset.click({ button: 'right' });
     await window.getByRole('menuitem', { name: '永久删除' }).click();
-    const windowCountBeforeCritical = application.windows().length;
-    await expect
-      .poll(() => application.windows().length, { timeout: 5_000 })
-      .toBeGreaterThan(windowCountBeforeCritical);
-    const criticalWindow = application.windows().at(-1)!;
+    const criticalDialog = window.getByRole('dialog', { name: '永久删除这些回收站资产？' });
+    await expect(criticalDialog).toBeVisible({ timeout: 10_000 });
     await expect(
-      criticalWindow.getByRole('heading', { name: '永久删除这些回收站资产？' }),
-    ).toBeVisible();
-    await expect(
-      criticalWindow.getByRole('button', { name: '取消', exact: true }),
+      criticalDialog.getByRole('button', { name: '取消', exact: true }),
     ).toBeFocused();
-    await expect(criticalWindow.locator('button.confirm')).toBeVisible();
-    await criticalWindow.keyboard.press('Escape').catch(() => undefined);
-    await expect.poll(() => criticalWindow.isClosed()).toBe(true);
+    await expect(criticalDialog.locator('button.ui-button--danger')).toBeVisible();
+    await window.keyboard.press('Escape');
+    await expect(criticalDialog).toBeHidden();
   } finally {
     await application.close();
     rmSync(temporaryRoot, { force: true, recursive: true });
