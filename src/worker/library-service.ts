@@ -151,7 +151,7 @@ import {
 
 import { columnsFor, degradedDefaults, hasTable, invalidateColumnProbe, missingColumns, qualify, selectColumns } from './lenient-columns';
 import { isBakeableStillImageFile } from '../shared/bakeable-still-image';
-import { ImageRotationWriteError, rotateStillImageFile } from './rotate-still-image-file';
+import { rotateStillImageFile } from './rotate-still-image-file';
 import {
   asMediaResourceExhaustedError,
   MEDIA_RESOURCE_EXHAUSTED_ERROR_CODE,

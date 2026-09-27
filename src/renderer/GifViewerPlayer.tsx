@@ -85,12 +85,24 @@ export function GifViewerPlayer(props: GifViewerPlayerProps) {
   );
   const [session, setSession] = useState<GifPlaybackSession | null>(null);
 
+  const [trackedSrc, setTrackedSrc] = useState(props.src);
+  if (trackedSrc !== props.src) {
+    setTrackedSrc(props.src);
+    setMode("loading");
+    setSession(null);
+  }
+
   useEffect(() => {
     const abort = new AbortController();
     let source: GifFrameSource | null = null;
     let disposed = false;
-    setMode("loading");
-    setSession(null);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      source?.close();
+      source = null;
+    };
 
     void (async () => {
       try {
@@ -101,29 +113,27 @@ export function GifViewerPlayer(props: GifViewerPlayerProps) {
         const parsed = readGifFrameTimings(bytes);
         source = await openGifFrameSource(bytes);
         if (disposed) {
-          source.close();
+          release();
           return;
         }
         if (source.frameCount <= 1) {
-          source.close();
-          source = null;
-          if (!disposed) setMode("still");
+          release();
+          setMode("still");
           return;
         }
         const frames = gifPlaybackFrames(parsed, source.frameCount);
-        const opened = source;
-        source = null;
         if (disposed) {
-          opened.close();
+          release();
           return;
         }
-        setSession({ frames, source: opened });
+        setSession({ frames, source });
         setMode("animated");
       } catch (error) {
         if (disposed || (error instanceof DOMException && error.name === "AbortError")) {
+          release();
           return;
         }
-        source?.close();
+        release();
         setMode("native");
       }
     })();
@@ -131,10 +141,7 @@ export function GifViewerPlayer(props: GifViewerPlayerProps) {
     return () => {
       disposed = true;
       abort.abort();
-      setSession((current) => {
-        current?.source.close();
-        return null;
-      });
+      release();
     };
   }, [props.src]);
 
@@ -203,6 +210,13 @@ function GifAnimatedStage({
   const [scrubRatio, setScrubRatio] = useState<number | null>(null);
   const [natural, setNatural] = useState({ w: 0, h: 0 });
   const [hasFrame, setHasFrame] = useState(false);
+  const [playbackSession, setPlaybackSession] = useState(session);
+  if (playbackSession !== session) {
+    setPlaybackSession(session);
+    setCurrentTimeMs(0);
+    setHasFrame(false);
+    setPlaying(Boolean(session) && autoPlay);
+  }
   const {
     fitToWindow,
     measureAndFit,
@@ -292,10 +306,7 @@ function GifAnimatedStage({
     if (!session) return;
     timeRef.current = 0;
     indexRef.current = -1;
-    setCurrentTimeMs(0);
-    setHasFrame(false);
     paint(0);
-    if (autoPlayRef.current && !userPausedRef.current) setPlaying(true);
   }, [paint, session]);
 
   useEffect(() => {

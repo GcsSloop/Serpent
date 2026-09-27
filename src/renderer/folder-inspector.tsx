@@ -42,17 +42,22 @@ export function useFolderInspector(input: {
   byteSize: number | null;
 } | null {
   const { api, libraryId, enabled, cardEntries, currentRef } = input;
-  const [loadedEntry, setLoadedEntry] = useState<FolderBrowseEntry | null>(null);
-  const [byteSize, setByteSize] = useState<number | null>(null);
   const cardKey = cardEntries.map((entry) => entry.folderId).join("\n");
   const currentKey = currentRef ? `${currentRef.locationKind}:${currentRef.folderId}` : "";
+  const queryKey = enabled && api && libraryId
+    ? `${libraryId}:${cardKey}:${currentKey}`
+    : "";
+  const [loadedEntry, setLoadedEntry] = useState<FolderBrowseEntry | null>(null);
+  const [byteSize, setByteSize] = useState<number | null>(null);
+  const [queryKeySeen, setQueryKeySeen] = useState(queryKey);
+  if (queryKeySeen !== queryKey) {
+    setQueryKeySeen(queryKey);
+    setLoadedEntry(null);
+    setByteSize(null);
+  }
 
   useEffect(() => {
-    if (!enabled || !api || !libraryId) {
-      setLoadedEntry(null);
-      setByteSize(null);
-      return;
-    }
+    if (!enabled || !api || !libraryId) return;
     let cancelled = false;
     const refs: FolderInspectorRef[] = cardEntries.length > 0
       ? cardEntries.map((entry) => ({
@@ -62,14 +67,8 @@ export function useFolderInspector(input: {
       : currentRef
         ? [currentRef]
         : [];
-    if (refs.length === 0) {
-      setLoadedEntry(null);
-      setByteSize(null);
-      return;
-    }
-    setByteSize(null);
+    if (refs.length === 0) return;
     if (cardEntries.length === 0 && currentRef) {
-      setLoadedEntry(null);
       void api.listFolderEntriesByRefs({ libraryId, refs: [currentRef] }).then((result) => {
         if (cancelled || !result.ok) return;
         setLoadedEntry(result.value[0] ?? null);
