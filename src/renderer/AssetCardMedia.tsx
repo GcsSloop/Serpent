@@ -110,10 +110,12 @@ export function AssetCardMedia({
   // image glyph — fall back to the themed file/cracked icon instead.
   const [errored, setErrored] = useState(false);
   const [coverAttempt, setCoverAttempt] = useState(0);
-  useEffect(() => {
+  const [coverUrlSeen, setCoverUrlSeen] = useState(coverUrl);
+  if (coverUrlSeen !== coverUrl) {
+    setCoverUrlSeen(coverUrl);
     setErrored(false);
     setCoverAttempt(0);
-  }, [coverUrl]);
+  }
   const retryCover = () => {
     if (coverAttempt < 2) {
       setCoverAttempt((current) => current + 1);
