@@ -2154,6 +2154,77 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
   text-transform: uppercase;
 }
 
+.nav-section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nav-section-search-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.nav-section-search-slot.is-open {
+  grid-template-rows: 1fr;
+}
+
+.nav-section-search-clip {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.nav-section-search {
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% - 12px);
+  height: 22px;
+  margin: 2px 6px 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--ui-radius-surface);
+  background: var(--raised-2);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(11px * var(--ui-font-scale));
+  font-weight: 450;
+  letter-spacing: normal;
+  text-transform: none;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition:
+    opacity 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.nav-section-search-slot.is-open .nav-section-search {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-section-search-slot,
+  .nav-section-search {
+    transition: none;
+  }
+}
+
+.nav-section-search:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+.nav-section-search::placeholder {
+  color: var(--tertiary);
+}
+
+.nav-section-title-row .tiny-action.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-soft-fg);
+}
+
 .nav-section-actions {
   display: flex;
   align-items: center;

@@ -296,14 +296,14 @@ describe('saveCanvasPreferences', () => {
     expect(parsed).toEqual(prefs);
   });
 
-  it('clamps cardSize to 96..320 on save', () => {
+  it('clamps cardSize to 96..1800 on save', () => {
     const storage = createStorageStub();
 
     saveCanvasPreferences({ ...DEFAULT_CANVAS_PREFERENCES, cardSize: 50 }, storage);
     expect(JSON.parse(storage.getItem(PREF_KEY)!).cardSize).toBe(96);
 
-    saveCanvasPreferences({ ...DEFAULT_CANVAS_PREFERENCES, cardSize: 500 }, storage);
-    expect(JSON.parse(storage.getItem(PREF_KEY)!).cardSize).toBe(320);
+    saveCanvasPreferences({ ...DEFAULT_CANVAS_PREFERENCES, cardSize: 4000 }, storage);
+    expect(JSON.parse(storage.getItem(PREF_KEY)!).cardSize).toBe(1800);
   });
 
   it('does not mutate the passed-in preferences object on clamp', () => {

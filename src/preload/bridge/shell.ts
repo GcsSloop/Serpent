@@ -13,6 +13,10 @@ import {
   commandCompletedPayloadSchema,
   type CommandCompletedPayload,
 } from '../../shared/command-completed';
+import {
+  criticalConfirmationPromptSchema,
+  type CriticalConfirmationDecision,
+} from '../../shared/critical-confirmation';
 import { parseShowEditContextMenuResult } from '../../shared/edit-context-menu';
 import {
   parseOpenExternalUrlResult,
@@ -33,6 +37,8 @@ import {
   BROWSE_SHORTCUT_CHANNEL,
   BROWSE_SHORTCUT_MENU_ENABLED_CHANNEL,
   COMMAND_COMPLETED_CHANNEL,
+  CRITICAL_CONFIRMATION_PROMPT_CHANNEL,
+  CRITICAL_CONFIRMATION_RESPOND_CHANNEL,
   COPY_SELECTION_CHANNEL,
   INVERT_SELECTION_CHANNEL,
   NATIVE_EDIT_COPY_CHANNEL,
@@ -340,5 +346,23 @@ export const shell: SerpentShellApi = Object.freeze({
   },
   setInputCaptureSystemModalActive(active: boolean) {
     ipcRenderer.send(PLUGIN_INPUT_CAPTURE_SYSTEM_MODAL_CHANNEL, { active: Boolean(active) });
+  },
+  onCriticalConfirmationPrompt(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      const parsed = criticalConfirmationPromptSchema.safeParse(payload);
+      if (!parsed.success) return;
+      listener(parsed.data);
+    };
+    ipcRenderer.on(CRITICAL_CONFIRMATION_PROMPT_CHANNEL, handler);
+    return () => {
+      ipcRenderer.removeListener(CRITICAL_CONFIRMATION_PROMPT_CHANNEL, handler);
+    };
+  },
+  async respondCriticalConfirmation(requestId: string, decision: CriticalConfirmationDecision) {
+    const result: unknown = await ipcRenderer.invoke(CRITICAL_CONFIRMATION_RESPOND_CHANNEL, {
+      requestId,
+      decision,
+    });
+    return result === true;
   },
 });

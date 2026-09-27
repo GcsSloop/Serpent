@@ -1563,4 +1563,31 @@ describe("NavigationSidebar folder-section blank area", () => {
     expect(onFoldersDroppedOnFolder).not.toHaveBeenCalled();
     expect(onExternalDrop).not.toHaveBeenCalled();
   });
+
+  it("filters the folder tree from the heading search and keeps ancestors", async () => {
+    const nav = await renderSidebar();
+    const openSearch = [...nav.querySelectorAll("button")].find(
+      (button) => button.getAttribute("aria-label") === "搜索文件夹",
+    );
+    expect(openSearch).toBeDefined();
+    await act(async () => {
+      openSearch!.click();
+    });
+    const input = nav.querySelector<HTMLInputElement>("input.nav-section-search");
+    const slot = input?.closest(".nav-section-search-slot");
+    expect(input).not.toBeNull();
+    expect(slot?.classList.contains("is-open")).toBe(true);
+    expect(slot?.previousElementSibling?.classList.contains("nav-section-heading")).toBe(true);
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(input, "Child");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(nav.querySelector("[data-nav-folder-id='folder-child']")).not.toBeNull();
+    expect(nav.querySelector("[data-nav-folder-id='folder-parent']")).not.toBeNull();
+    expect(nav.querySelector("[data-nav-folder-id='folder-sibling']")).toBeNull();
+  });
 });

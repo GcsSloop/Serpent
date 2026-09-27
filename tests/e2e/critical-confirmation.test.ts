@@ -9,7 +9,7 @@ import { resolveElectronExecutablePath, waitForLibraryLoadingToFinish } from "./
 // 建库 + 等加载 + 独立确认窗，默认 30 s 不够（与其它 E2E 一致放宽）。
 test.describe.configure({ timeout: 120_000 });
 
-test("uses an independent critical window for library disk deletion", async () => {
+test("uses the in-app dialog for library disk deletion", async () => {
   const temporaryRoot = mkdtempSync(
     path.join(tmpdir(), "serpent-critical-confirmation-test-"),
   );
@@ -59,7 +59,7 @@ test("uses an independent critical window for library disk deletion", async () =
       return result.value[0].libraryId;
     });
 
-    const openCriticalWindow = async () => {
+    const openCriticalDialog = async () => {
       const deletion = window.evaluate(async (id) => {
         const bridge = globalThis as typeof globalThis & {
           serpent: {
@@ -76,36 +76,26 @@ test("uses an independent critical window for library disk deletion", async () =
         });
         return result;
       }, libraryId);
-      await expect
-        .poll(() => application.windows().length, { timeout: 5_000 })
-        .toBeGreaterThan(1);
-      return { window: application.windows().at(-1)!, deletion };
+      const dialog = window.getByRole("dialog", { name: "从磁盘删除这个资源库？" });
+      await expect(dialog).toBeVisible({ timeout: 10_000 });
+      return { dialog, deletion };
     };
 
-    const first = await openCriticalWindow();
-    const firstCriticalWindow = first.window;
+    const first = await openCriticalDialog();
+    await expect(first.dialog.getByRole("button", { name: "从磁盘删除", exact: true })).toBeVisible();
     await expect(
-      firstCriticalWindow.getByRole("heading", { name: "从磁盘删除这个资源库？" }),
-    ).toBeVisible();
-    await expect(firstCriticalWindow.locator("button.confirm")).toBeVisible();
-    await expect(
-      firstCriticalWindow.getByRole("button", { name: /不再显示|总是/ }),
+      first.dialog.getByRole("button", { name: /不再显示|总是/ }),
     ).toHaveCount(0);
-    // Main closes the child synchronously after Escape; Playwright may report
-    // that expected target closure from keyboard.press.
-    await firstCriticalWindow.keyboard.press("Escape").catch(() => undefined);
+    await expect(first.dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();
+    await window.keyboard.press("Escape");
     await expect(first.deletion).resolves.toMatchObject({ ok: false });
+    await expect(first.dialog).toBeHidden();
     await expect.poll(() => existsSync(libraryPath)).toBe(true);
 
-    const second = await openCriticalWindow();
-    const secondCriticalWindow = second.window;
-    await expect(
-      secondCriticalWindow.getByRole("heading", { name: "从磁盘删除这个资源库？" }),
-    ).toBeVisible();
-    await secondCriticalWindow
+    const second = await openCriticalDialog();
+    await second.dialog
       .getByRole("button", { name: "从磁盘删除", exact: true })
-      .click()
-      .catch(() => undefined);
+      .click();
     await expect(second.deletion).resolves.toMatchObject({ ok: true });
     await expect.poll(() => existsSync(libraryPath)).toBe(false);
   } finally {
@@ -160,18 +150,12 @@ test("cancelling a folder disk delete reports an info notice instead of an error
     await expect(menu).toBeVisible();
     await menu.getByRole("menuitem", { name: "从硬盘中删除" }).click();
 
-    const windowsBeforeCritical = application.windows().length;
-    await expect
-      .poll(() => application.windows().length, { timeout: 10_000 })
-      .toBeGreaterThan(windowsBeforeCritical);
-    const criticalWindow = application.windows().at(-1)!;
-    await expect(
-      criticalWindow.getByRole("heading", { name: "从磁盘删除这个文件夹？" }),
-    ).toBeVisible();
-    await criticalWindow
+    const dialog = window.getByRole("dialog", { name: "从磁盘删除这个文件夹？" });
+    await expect(dialog).toBeVisible({ timeout: 10_000 });
+    await expect(dialog.getByRole("button", { name: "强制删除", exact: true })).toBeFocused();
+    await dialog
       .getByRole("button", { name: "取消", exact: true })
-      .click()
-      .catch(() => undefined);
+      .click();
 
     // info 通知点名了操作……
     await expect(window.locator(".workspace-notice")).toContainText(

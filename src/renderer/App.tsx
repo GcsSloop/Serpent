@@ -317,6 +317,8 @@ import { MediaJobsDialog } from "./MediaJobsDialog";
 import { PluginJobActivityBanner } from "./PluginJobActivityBanner";
 import { AiConnectionFailureDialog } from "./AiConnectionFailureDialog";
 import { FatalAlertDialog } from "./FatalAlertDialog";
+import { CriticalConfirmationDialog } from "./CriticalConfirmationDialog";
+import { useCriticalConfirmationPrompt } from "./use-critical-confirmation-prompt";
 import { useAiConnectionFailure } from "./use-ai-connection-failure";
 import {
   countOtherLivePluginJobs,
@@ -11156,6 +11158,8 @@ function AppInner() {
     },
   });
 
+  const criticalConfirmation = useCriticalConfirmationPrompt(shellApi);
+
   const dialogFocusTrapActive = Boolean(
     dialog ||
       conflicts ||
@@ -11189,7 +11193,8 @@ function AppInner() {
       Boolean(
         exportProgress &&
           !["complete", "cancelled", "failed"].includes(exportProgress.phase),
-      ),
+      ) ||
+      criticalConfirmation.request !== null,
   );
   useDialogFocusTrap(
     dialogFocusTrapActive,
@@ -15352,6 +15357,10 @@ function AppInner() {
         onConfirm={fatalAlertAlreadyOpen ? confirmAlreadyOpenLibrarySwitch : undefined}
         onDismiss={fatalAlertAlreadyOpen ? dismissAlreadyOpenPrompt : dismissFatalAlert}
         onSwitchLibrary={fatalAlertAlreadyOpen ? undefined : openLibraryChooserFromError}
+      />
+      <CriticalConfirmationDialog
+        onDecide={criticalConfirmation.decide}
+        request={criticalConfirmation.request}
       />
       <MediaJobsDialog
         open={mediaJobsOpen && library !== null}

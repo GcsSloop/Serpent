@@ -3,6 +3,7 @@ import type {
   PublicErrorCode,
   PublicErrorReason,
 } from "../shared/protocol/errors";
+import { LibraryTransitionInProgressError } from "./library-transition-lock";
 import { catalogs } from "./i18n/catalogs";
 import { zhCN } from "./i18n/catalogs/zh-CN";
 import { DEFAULT_LOCALE } from "./i18n/locale-preferences";
@@ -71,6 +72,9 @@ export function toMessage(
   fallback: string,
   locale: AppLocale = DEFAULT_LOCALE,
 ) {
+  if (error instanceof LibraryTransitionInProgressError) {
+    return translateForLocale(locale, "error.libraryTransitionInProgress");
+  }
   if (error instanceof LibraryOperationError) {
     const message = messageForCode(error.code, locale) ?? fallback;
     const reason = error.reason

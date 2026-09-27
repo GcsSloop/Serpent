@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { ASSET_GRID_GAP_PX, leftoverWidthPx } from "../../src/renderer/asset-grid-layout";
+import {
+  ASSET_GRID_GAP_PX,
+  countFittingColumns,
+  leftoverWidthPx,
+} from "../../src/renderer/asset-grid-layout";
 import {
   BROWSE_CARD_PINCH_GAIN,
   cardSizeFillingColumns,
@@ -20,7 +24,9 @@ describe("enumerateDiscreteCardSizes (Serpent-7ny)", () => {
     const stops = enumerateDiscreteCardSizes(width);
     expect(stops.length).toBeGreaterThan(2);
     expect(stops[0]).toBe(CARD_SIZE_MIN);
-    expect(stops[stops.length - 1]).toBe(CARD_SIZE_MAX);
+    const largest = stops[stops.length - 1]!;
+    expect(largest).toBeLessThanOrEqual(CARD_SIZE_MAX);
+    expect(leftoverWidthPx(width, largest)).toBeGreaterThanOrEqual(0);
     for (let i = 1; i < stops.length; i += 1) {
       expect(stops[i]!).toBeGreaterThan(stops[i - 1]!);
     }
@@ -33,6 +39,14 @@ describe("enumerateDiscreteCardSizes (Serpent-7ny)", () => {
 
   it("falls back to endpoints when width is unknown", () => {
     expect(enumerateDiscreteCardSizes(0)).toEqual([CARD_SIZE_MIN, CARD_SIZE_MAX]);
+  });
+
+  it("largest stop on a 3840-wide canvas still fits two columns", () => {
+    const width = 3840;
+    const stops = enumerateDiscreteCardSizes(width);
+    const largest = stops[stops.length - 1]!;
+    expect(largest).toBe(CARD_SIZE_MAX);
+    expect(countFittingColumns(width, largest)).toBe(2);
   });
 
   it("cardSizeFillingColumns matches the inverse of leftover packing", () => {

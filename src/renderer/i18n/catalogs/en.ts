@@ -208,6 +208,10 @@ export const en = {
     folders: "Folders",
     showIgnored: "Show hidden items",
     sortFolders: "Sort folders",
+    searchFolders: "Search folders",
+    searchCollections: "Search collections",
+    searchNamePlaceholder: "Name",
+    searchEmpty: "No matching names",
     sortCollections: "Sort collections",
     sortBy: "Sort by",
     sortByName: "By name",
@@ -2274,9 +2278,16 @@ export const en = {
       INVALID_FOLDER_NAME: "The name contains unsupported characters.",
       INVALID_APPEARANCE: "Choose an icon or color from the available options.",
       FOLDER_ALREADY_EXISTS:
-        "A folder or file already exists at this path, so restore cannot reuse the original location (nothing is overwritten). Rename or move the conflicting item, then restore again.",
+        "A folder or file with this name is already here, so nothing is overwritten. Choose another name, or move the existing item first.",
       FOLDER_NAME_CONFLICT: "A folder or file with this name already exists.",
       FOLDER_NOT_FOUND: "That library folder is no longer at this location. It may have been moved, renamed, or the disk may be disconnected. Reconnect the drive or choose the folder again.",
+      FOLDER_NOT_EMPTY: "This folder still has items in it. Move or delete them before deleting the folder.",
+      AUTOMATION_UNDO_GROUP_NOT_FOUND: "That step cannot be found to undo.",
+      AUTOMATION_UNDO_NOT_AVAILABLE: "That step cannot be undone.",
+      AUTOMATION_UNDO_STALE: "The library has changed, so that step can no longer be undone.",
+      PLUGIN_HOOK_BLOCKED: "A plugin cancelled this action.",
+      HISTORY_TOO_LARGE: "That change was too large to keep in the undo history.",
+      SYNC_IN_PROGRESS: "Sync is still running. Wait for it to finish, then try again.",
       INVALID_IMPORT_SOURCE: "Could not read the selected import content.",
       INVALID_DROP_SELECTION: "Drop either one local folder, or one or more local files — not a mix of files and folders.",
       WEB_MEDIA_NOT_FOUND: "The drop did not contain a downloadable web image or video URL.",
@@ -2418,6 +2429,7 @@ export const en = {
       LINKED_FOLDER_NOT_FOUND: "The linked folder path no longer exists on this computer. Reconnect the drive or relink the folder, then open the library again.",
       LINKED_FOLDER_FOREIGN_DEVICE: "The linked folder's device or volume identity differs from the recorded computer. Relink it on this computer."
     },
+    libraryTransitionInProgress: "A library is still opening or switching. Wait for that to finish, then import or edit.",
     withReason: "{message} Reason: {reason}"
   },
   action: {

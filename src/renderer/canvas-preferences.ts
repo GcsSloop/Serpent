@@ -45,7 +45,9 @@ export interface CanvasPreferencesStorage {
 }
 
 export const CARD_SIZE_MIN = 96;
-export const CARD_SIZE_MAX = 320;
+// 1800 keeps two columns on a 3840-wide canvas: (3840 + 14) / (1800 + 14) > 2.
+// 1920 collapses to one column because that ratio falls just under 2.
+export const CARD_SIZE_MAX = 1800;
 // Serpent-akz originally used this as the range-input step (2px). Serpent-7ny
 // moved the browse slider onto width-aligned discrete column stops
 // (`card-size-stops.ts`); keep the helper for clamp math / legacy tests.
@@ -256,7 +258,7 @@ export function loadCanvasPreferences(
 /**
  * Persist canvas preferences to storage.
  *
- * Clamps `cardSize` to `[96, 320]` before writing so the stored value is
+ * Clamps `cardSize` to `[96, 1800]` before writing so the stored value is
  * always within the valid range.  The input `prefs` object is not mutated.
  */
 export function saveCanvasPreferences(

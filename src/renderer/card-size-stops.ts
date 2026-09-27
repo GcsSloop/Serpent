@@ -9,6 +9,7 @@
 import {
   ASSET_GRID_GAP_PX,
   countFittingColumns,
+  leftoverWidthPx,
 } from "./asset-grid-layout";
 import {
   CARD_SIZE_MAX,
@@ -103,7 +104,10 @@ export function enumerateDiscreteCardSizes(
   }
 
   sizes.add(clampCardSize(lo));
-  sizes.add(clampCardSize(hi));
+  const hiSize = clampCardSize(hi);
+  if (leftoverWidthPx(availableWidthPx, hiSize, gapPx) >= 0) {
+    sizes.add(hiSize);
+  }
 
   return [...sizes].sort((a, b) => a - b);
 }

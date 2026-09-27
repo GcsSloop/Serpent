@@ -88,6 +88,10 @@ export const MCP_SETTINGS_EVENT_CHANNEL = 'serpent:mcp:settings-event' as const;
 /** Critical confirmation child window: the preload exposes only these two calls. */
 export const CRITICAL_CONFIRMATION_GET_CHANNEL = 'serpent:critical-confirmation:get' as const;
 export const CRITICAL_CONFIRMATION_DECIDE_CHANNEL = 'serpent:critical-confirmation:decide' as const;
+/** Main → renderer: show the themed in-app critical confirmation dialog. */
+export const CRITICAL_CONFIRMATION_PROMPT_CHANNEL = 'serpent:critical-confirmation:prompt' as const;
+/** Renderer → Main: the in-app dialog's cancel/confirm decision. */
+export const CRITICAL_CONFIRMATION_RESPOND_CHANNEL = 'serpent:critical-confirmation:respond' as const;
 /** Renderer plugin manager → Main. File paths remain Main-owned. */
 export const PLUGIN_MANAGER_CHANNEL = 'serpent:plugin-manager:request' as const;
 /** Main → Renderer: progress and terminal state for a GitHub plugin install. */
