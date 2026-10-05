@@ -631,6 +631,13 @@ const IS_WINDOWS_PLATFORM =
   resolveRendererPlatform(navigator.userAgent) === "windows";
 
 const SHORTCUT_PLATFORM: CommandPlatform = IS_MAC_PLATFORM ? "mac" : "windows";
+
+function focusAssetRenameInput(input: HTMLInputElement | null) {
+  if (!input) return;
+  input.focus();
+  const { baseName } = splitAssetFileName(input.value);
+  input.setSelectionRange(0, baseName.length);
+}
 /**
  * Minimum spacing between full browse reloads triggered by a remote library's
  * change sequence.
@@ -11165,7 +11172,6 @@ function AppInner() {
     dialog ||
       conflicts ||
       importSourceFailurePlan ||
-      assetRenameDialog ||
       batchRelinkPreview ||
       restoreDialog ||
       moveDialog ||
@@ -11207,6 +11213,7 @@ function AppInner() {
     enabled: Boolean(library) && !showTagManagement && !showPluginSidebarView,
     acceleratorsBlocked:
       dialogFocusTrapActive ||
+      Boolean(assetRenameDialog) ||
       Boolean(previewAsset) ||
       editableTextFocused,
   });
@@ -14371,8 +14378,7 @@ function AppInner() {
                             asset.width,
                             asset.height,
                             { mediaType: asset.mediaType },
-                          ) &&
-                            !renamingThisAsset && (
+                          ) && (
                               <span className="asset-dimensions">
                                 {asset.width} × {asset.height}
                               </span>
@@ -14393,17 +14399,10 @@ function AppInner() {
                                       changeAssetRenameValue(event.target.value)
                                     }
                                     onClick={(event) => event.stopPropagation()}
-                                    onFocus={(event) => {
-                                      const { baseName } = splitAssetFileName(
-                                        event.currentTarget.value,
-                                      );
-                                      event.currentTarget.setSelectionRange(
-                                        0,
-                                        baseName.length,
-                                      );
-                                    }}
+                                    ref={focusAssetRenameInput}
                                     onKeyDown={(event) => {
                                       event.stopPropagation();
+                                      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
                                       if (event.key === "Enter") {
                                         event.preventDefault();
                                         void submitAssetRename();
@@ -14422,7 +14421,17 @@ function AppInner() {
                                   ) : null}
                                 </span>
                               ) : (
-                                <strong className="asset-caption-filename" title={asset.displayName}>
+                                <strong
+                                  className="asset-caption-filename"
+                                  title={asset.displayName}
+                                  onDoubleClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    if (!busy && !showTrash && !asset.deletedAt && asset.availability === "available") {
+                                      openAssetRename(asset.assetId);
+                                    }
+                                  }}
+                                >
                                   {renderMiddleEllipsisFilename(asset.displayName, searchValue)}
                                 </strong>
                               )}

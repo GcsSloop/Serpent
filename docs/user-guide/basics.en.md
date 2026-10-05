@@ -87,13 +87,13 @@ Customize icons and color accents for managed library folders, linked folder roo
 - **Toolbar**: Search, advanced filters, sorting, and view controls.
 - **Inspector**: Displays information, tags, rating, favorite status, description, source URL, technical metadata, and AI analysis results for the selected asset.
 
-Supports marquee selection, `⌘`/`Ctrl` click to add, and `Shift` range selection; press `F2` to rename inline.
+Supports marquee selection, `⌘`/`Ctrl` click to add, and `Shift` range selection. Double-click a filename or press `F2` to rename inline. The basename is selected initially; click elsewhere or press `Enter` to save, or `Esc` to cancel.
 
 ![Library, Inspector, filters, and AI overview](../assets/ui/Serpent-Preview.png)
 
 ## Viewer
 
-Double-click an asset to open the fullscreen viewer (press `Esc` to exit):
+Double-click an asset thumbnail to open the fullscreen viewer (press `Esc` to exit; on macOS, Space also opens or closes it):
 
 - **Navigation**: Use arrow keys `←` / `→` to navigate smoothly between assets in the current view.
 - **Media playback & transforms**:

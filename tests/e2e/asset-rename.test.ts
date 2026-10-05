@@ -150,6 +150,52 @@ test("selects the F2 asset basename while leaving the extension unselected", asy
   }
 });
 
+test("double-clicks the filename in place and saves on outside click without opening preview", async () => {
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), "serpent-rename-doubleclick-"));
+  const libraryName = "Rename Double Click";
+  const libraryPath = path.join(temporaryRoot, libraryName);
+  const sourcePath = path.join(temporaryRoot, "hero.png");
+  writeFileSync(sourcePath, VALID_PNG);
+  const application = await launchApp(temporaryRoot, libraryPath, sourcePath);
+  try {
+    const window = await application.firstWindow();
+    await createLibrary(window, libraryName);
+    await importFilesThroughBridge(window);
+    const card = window.locator('[data-asset-id][data-asset-name="hero.png"]');
+    const name = card.locator(".asset-caption-filename");
+    const nameBox = await name.boundingBox();
+    await name.dblclick();
+    const input = card.locator(".asset-inline-rename-input");
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue("hero.png");
+    expect(await input.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([0, 4]);
+    await expect(window.locator(".workspace-viewer")).toHaveCount(0);
+    const inputBox = await input.boundingBox();
+    expect(Math.abs(inputBox!.y - nameBox!.y)).toBeLessThan(5);
+    const metadataBox = await card.locator(".asset-caption > span:last-child").boundingBox();
+    expect(inputBox!.y + inputBox!.height).toBeLessThanOrEqual(metadataBox!.y);
+    await input.fill("新名称 空格.png");
+    // A real canvas click must remain available while inline editing.
+    await card.locator(".asset-preview").click();
+    const renamed = window.locator('[data-asset-id][data-asset-name="新名称 空格.png"]');
+    await expect(renamed).toBeVisible({ timeout: 10_000 });
+    await expect(renamed.locator(".asset-inline-rename-input")).toHaveCount(0);
+    expect(existsSync(path.join(libraryPath, "Assets", "新名称 空格.png"))).toBe(true);
+    expect(existsSync(path.join(libraryPath, "Assets", "hero.png"))).toBe(false);
+    await renamed.locator(".asset-caption-filename").dblclick();
+    await renamed.locator(".asset-inline-rename-input").fill("discarded.png");
+    await renamed.locator(".asset-inline-rename-input").press("Escape");
+    await expect(renamed.locator(".asset-inline-rename-input")).toHaveCount(0);
+    expect(existsSync(path.join(libraryPath, "Assets", "discarded.png"))).toBe(false);
+    // The image area still opens preview.
+    await renamed.locator(".asset-preview").dblclick();
+    await expect(window.locator(".workspace-viewer")).toBeVisible();
+  } finally {
+    await application.close();
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("keeps the inline rename open with a conflict error and allows retry after fixing the name", async () => {
   const temporaryRoot = mkdtempSync(
     path.join(tmpdir(), "serpent-rename-conflict-"),

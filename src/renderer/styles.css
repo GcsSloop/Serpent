@@ -7405,14 +7405,13 @@ select.ai-config-input.ai-config-languages {
    (shared .text-field chrome: single border, focus ring via box-shadow only,
    normal foreground — not caption tertiary gray). */
 .asset-inline-rename {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: center;
-  gap: 2px;
+  position: relative;
+  display: block;
+  flex: 0 0 calc(14px * var(--ui-font-scale));
   width: 100%;
-  min-height: 29px;
-  padding: 2px 0;
-  border: 1px solid transparent;
+  height: calc(14px * var(--ui-font-scale));
+  padding: 0;
+  border: 0;
   border-radius: 6px;
   color: var(--text);
 }
@@ -7420,16 +7419,19 @@ select.ai-config-input.ai-config-languages {
 .asset-inline-rename-input.text-field,
 .asset-inline-rename .text-field.asset-inline-rename-input {
   display: block;
+  position: absolute;
+  top: calc(-1px * var(--ui-font-scale));
+  left: 0;
   box-sizing: border-box;
-  grid-column: 1;
   min-width: 0;
   width: 100%;
-  height: 23px;
+  height: calc(16px * var(--ui-font-scale));
   margin: 0;
   padding: 0 6px;
-  font: inherit;
-  font-size: calc(12px * var(--ui-font-scale));
-  line-height: 1.3;
+  font-family: var(--font-ui);
+  font-size: calc(11px * var(--ui-font-scale));
+  font-weight: var(--ui-font-weight-medium);
+  line-height: calc(14px * var(--ui-font-scale));
   color: var(--text);
   user-select: text;
   cursor: text;
@@ -7441,8 +7443,22 @@ select.ai-config-input.ai-config-languages {
   outline: 0;
 }
 
+.asset-caption-align-center .asset-inline-rename-input {
+  text-align: center;
+}
+
+.asset-caption-align-right .asset-inline-rename-input {
+  text-align: right;
+}
+
 .asset-inline-rename-error {
-  grid-column: 1;
+  position: absolute;
+  top: calc(17px * var(--ui-font-scale));
+  left: 0;
+  z-index: 2;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--raised);
   color: var(--danger);
   font-size: calc(10px * var(--ui-font-scale));
 }
