@@ -15,7 +15,8 @@ function folderRow(window: Page, name: string) {
 async function finishFolderEdit(window: Page, name: string) {
   const input = window.locator(".nav-inline-edit input");
   await input.fill(name);
-  await input.press("Enter");
+  // Enter can remove the row during dispatch; send it once to the focused input.
+  await window.keyboard.press("Enter");
   await expect(window.locator(".nav-inline-edit")).toHaveCount(0);
   await expect(folderRow(window, name)).toBeVisible();
 }
