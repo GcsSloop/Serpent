@@ -129,7 +129,7 @@ Serpent can sync a library across machines over WebDAV: configure servers global
 | Toggle fullscreen | ⌃⌘F | F11 |
 | New workspace tab | ⌘T | Ctrl+T |
 | Close current tab | ⌘W | Ctrl+W |
-| Open viewer | Enter / Space | Enter / Space |
+| Open viewer | Enter / Space (Space again to close) | Enter / Space |
 | Exit viewer to browse | Esc | Esc |
 | Open in external app | ⌘O | Ctrl+O |
 | Reveal in file manager | ⌘⇧S | Ctrl+Shift+S |

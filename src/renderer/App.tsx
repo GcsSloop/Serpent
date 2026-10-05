@@ -409,6 +409,7 @@ import {
   type DialogEscapeSnapshot,
 } from "./dialog-escape-stack";
 import { splitAssetFileName, useAssetRename } from "./useAssetRename";
+import { useMacPreviewSpaceToggle } from "./use-mac-preview-space-toggle";
 import { useInlineFolderEdit } from "./use-inline-folder-edit";
 import { useInlineSmartCollectionEdit } from "./use-inline-smart-collection-edit";
 import { usePanelResize } from "./use-panel-resize";
@@ -11513,6 +11514,22 @@ function AppInner() {
     selectedAsset,
     visibleAssets,
   ]);
+
+  useMacPreviewSpaceToggle({
+    enabled: IS_MAC_PLATFORM && Boolean(library) && !dialogFocusTrapActive,
+    previewOpen: Boolean(previewAsset),
+    canOpen: Boolean(
+      selectedAsset && selectedAsset.availability === "available" &&
+      !selectedAsset.deletedAt && !showTagManagement && !showPluginSidebarView,
+    ),
+    open: () => {
+      if (selectedAsset) openAssetPreview(selectedAsset);
+    },
+    close: async () => {
+      if (previewModalRef.current) await previewModalRef.current.requestClose();
+      else await closeAssetPreview();
+    },
+  });
 
   // macOS three-finger swipe while viewing → previous/next (same order as arrows).
   useEffect(() => {

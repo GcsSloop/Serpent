@@ -425,9 +425,12 @@ test("plays a direct MP4 and a generated WebM fallback through the asset viewer"
     );
     await window.mouse.up();
     await directScrubber.focus();
-    await window.keyboard.press("Space");
-    // Space belongs to viewer playback even after the scrubber receives focus;
-    // it must not invoke the slider's native Space behavior instead.
+    if (process.platform === "darwin") {
+      // macOS reserves Space for closing Quick Look; use the transport button.
+      await directViewer.getByRole("button", { name: "暂停", exact: true }).click();
+    } else {
+      await window.keyboard.press("Space");
+    }
     await expect
       .poll(() =>
         directVideo.evaluate((element) => {
