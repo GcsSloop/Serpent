@@ -3215,7 +3215,7 @@ function AppInner() {
   );
 
   // Serpent-b8a853: the include-subfolders hint pulses only for the folder-scope
-  // button (not the collection variant), in a folder browsing mode that shows
+  // checkbox (not the collection variant), in a folder browsing mode that shows
   // child-folder cards but zero direct assets, while the recursive toggle is
   // off, the global feature-hint switch is on, and the hint is not yet
   // dismissed (the user has never expanded this folder's subfolders). The
@@ -6132,7 +6132,7 @@ function AppInner() {
     const folderId = scope === "all" || scope === "root" ? undefined : scope;
     const recursive = request.browseState
       ? request.browseState.folderRecursive
-      : scope !== "all" && scope !== "root"
+      : scope !== "all"
         ? isFolderRecursiveEnabled(folderRecursivePrefs, targetLibraryId, scope)
         : false;
     acknowledgeWorkspaceNavigation(
@@ -12640,6 +12640,77 @@ function AppInner() {
       : canvasFolderBrowseEntries;
   const folderCardRowVisible =
     library !== null && folderRowEntries.length > 0;
+  const folderBrowseControlsVisible = Boolean(library) &&
+    !showTrash && !showTagManagement && !showPluginSidebarView &&
+    !activeTagId && !activeCollectionId && !activeSmartCollectionId &&
+    assetScope !== "all";
+
+  function changeFolderContentsScope(next: boolean) {
+    if (!library) return;
+    void closeAssetPreview(false);
+    folderRecursiveRef.current = next;
+    setFolderRecursive(next);
+    const nextPrefs = withFolderRecursiveEnabled(
+      folderRecursivePrefs, library.libraryId, assetScope, next,
+    );
+    setFolderRecursivePrefs(nextPrefs);
+    saveFolderRecursivePreferences(nextPrefs);
+    if (next && recursiveHintKey) {
+      const hinted = withFeatureHintShown(featureHintPrefs, recursiveHintKey);
+      setFeatureHintPrefs(hinted);
+      saveFeatureHintPreferences(hinted);
+    }
+    const discovery = currentQueryDefinition();
+    void loadContent(library, assetScope, {
+      discovery,
+      folderRecursive: next,
+      // Text search retains its existing descendant scope.
+      searchScope: discovery.search !== undefined
+        ? folderSearchScope(assetScope)
+        : folderBrowseScope(assetScope, next),
+    }).catch((caught) => {
+      setError(toMessage(caught, t("toast.readAssetsFailed"), locale));
+    });
+  }
+
+  const folderBrowseHeaderElement = folderBrowseControlsVisible ? (
+    <div className="folder-browse-section-header" onMouseDown={(event) => event.stopPropagation()}>
+      <h2>{t("scope.subfoldersCount", { count: folderRowEntries.length })}</h2>
+      <label
+        className={`canvas-include-subfolders${recursiveHintActive ? " is-feature-hinting" : ""}`}
+        title={t("nav.showSubfolderContentsHint")}
+        onMouseEnter={() => {
+          includeSubfoldersHoverTimerRef.current = setTimeout(() => {
+            includeSubfoldersHoverTimerRef.current = null;
+            if (recursiveHintKey) {
+              const hinted = withFeatureHintShown(featureHintPrefs, recursiveHintKey);
+              setFeatureHintPrefs(hinted);
+              saveFeatureHintPreferences(hinted);
+            }
+          }, 500);
+        }}
+        onMouseLeave={() => {
+          if (includeSubfoldersHoverTimerRef.current) {
+            clearTimeout(includeSubfoldersHoverTimerRef.current);
+            includeSubfoldersHoverTimerRef.current = null;
+          }
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={folderRecursive}
+          disabled={busy}
+          onChange={(event) => changeFolderContentsScope(event.currentTarget.checked)}
+        />
+        <span>{t("nav.showSubfolderContents")}</span>
+      </label>
+    </div>
+  ) : null;
+  const folderContentHeaderElement = folderBrowseControlsVisible ? (
+    <div className="folder-browse-section-header folder-content-header" onMouseDown={(event) => event.stopPropagation()}>
+      <h2>{t("scope.contentCount", { count: searchTotal ?? visibleAssets.length })}</h2>
+    </div>
+  ) : null;
   const folderCardRowElement = folderCardRowVisible ? (
     <div
       className={
@@ -13326,90 +13397,6 @@ function AppInner() {
             {library &&
               !showTrash &&
               !showTagManagement &&
-              !showPluginSidebarView &&
-              !activeTagId &&
-              !activeCollectionId &&
-              !activeSmartCollectionId &&
-              assetScope !== "all" &&
-              assetScope !== "root" && (
-                <button
-                  aria-pressed={folderRecursive}
-                  className={`workspace-include-subfolders${
-                    recursiveHintActive ? " is-feature-hinting" : ""
-                  }`}
-                  onMouseEnter={() => {
-                    // Hovering the highlighted affordance >0.5s dismisses the
-                    // hint permanently (shared all-highlights rule).
-                    includeSubfoldersHoverTimerRef.current = setTimeout(() => {
-                      includeSubfoldersHoverTimerRef.current = null;
-                      if (recursiveHintKey) {
-                        const hinted = withFeatureHintShown(
-                          featureHintPrefs,
-                          recursiveHintKey,
-                        );
-                        setFeatureHintPrefs(hinted);
-                        saveFeatureHintPreferences(hinted);
-                      }
-                    }, 500);
-                  }}
-                  onMouseLeave={() => {
-                    if (includeSubfoldersHoverTimerRef.current) {
-                      clearTimeout(includeSubfoldersHoverTimerRef.current);
-                      includeSubfoldersHoverTimerRef.current = null;
-                    }
-                  }}
-                  onClick={() => {
-                    // Include-subfolders changes the browse result set (REQ-VIEW-004).
-                    void closeAssetPreview(false);
-                    const next = !folderRecursiveRef.current;
-                    folderRecursiveRef.current = next;
-                    setFolderRecursive(next);
-                    const nextPrefs = withFolderRecursiveEnabled(
-                      folderRecursivePrefs,
-                      library.libraryId,
-                      assetScope,
-                      next,
-                    );
-                    setFolderRecursivePrefs(nextPrefs);
-                    saveFolderRecursivePreferences(nextPrefs);
-                    // Once the user has expanded this folder's children, the
-                    // hint is moot and must never pulse again (Serpent-b8a853).
-                    if (next && recursiveHintKey) {
-                      const hintedPrefs = withFeatureHintShown(
-                        featureHintPrefs,
-                        recursiveHintKey,
-                      );
-                      setFeatureHintPrefs(hintedPrefs);
-                      saveFeatureHintPreferences(hintedPrefs);
-                    }
-                    const searchActive = currentQueryDefinition().search !== undefined;
-                    void loadContent(library, assetScope, {
-                      discovery: currentQueryDefinition(),
-                      // Text search is recursive by definition (REQ-FILTER-012),
-                      // so changing the browse-only switch must not narrow a
-                      // live search result set.
-                      searchScope: searchActive
-                        ? folderSearchScope(assetScope)
-                        : {
-                            kind: "folder",
-                            folderId: assetScope,
-                            recursive: next,
-                          },
-                    }).catch((caught) => {
-                      setError(
-                        toMessage(caught, t("toast.readAssetsFailed"), locale),
-                      );
-                    });
-                  }}
-                  type="button"
-                  {...iconActionAttrs(t("nav.includeChildFolders"))}
-                >
-                  <Icon name="folders" size={14} />
-                </button>
-              )}
-            {library &&
-              !showTrash &&
-              !showTagManagement &&
               !activeTagId &&
               activeCollectionId &&
               !activeSmartCollectionId && (
@@ -13770,7 +13757,7 @@ function AppInner() {
               )
             : null}
         <div
-          className={`workspace-canvas${previewAsset ? " is-viewing" : previewRestoring ? " is-restoring" : ""}${externalDropActive ? " is-external-drop" : ""}`}
+          className={`workspace-canvas${folderBrowseControlsVisible ? " has-folder-browse-controls" : ""}${previewAsset ? " is-viewing" : previewRestoring ? " is-restoring" : ""}${externalDropActive ? " is-external-drop" : ""}`}
           onDragEnter={handleExternalDragEnter}
           onDragLeave={handleExternalDragLeave}
           onDragOver={handleExternalDragOver}
@@ -13829,7 +13816,9 @@ function AppInner() {
           ) : library ? (
             browseCanvasBodyLayout.mode !== "empty" ? (
               <>
+                {folderBrowseHeaderElement}
                 {folderCardRowElement}
+                {folderContentHeaderElement}
                 {browseCanvasBodyLayout.showAssetGrid && (
                   <div
                     className={`asset-grid is-${assetViewMode}`}
@@ -14557,7 +14546,9 @@ function AppInner() {
               </>
             ) : (
               <>
+                {folderBrowseHeaderElement}
                 {folderCardRowElement}
+                {folderContentHeaderElement}
                 <div className="empty-library">
                 <div className="empty-orbit">
                   <Icon name={browseEmptyState.icon} size={24} />

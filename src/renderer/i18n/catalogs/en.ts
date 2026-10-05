@@ -185,6 +185,8 @@ export const en = {
     windowClose: "Close",
   },
   scope: {
+    subfoldersCount: "Subfolders ({count})",
+    contentCount: "Content ({count})",
     workspace: "Workspace",
     currentBrowseScope: "Current browse scope",
     allAssets: "All assets",
@@ -228,6 +230,8 @@ export const en = {
     includeChildCollections: "Include subcollections",
     childCollectionCount: "{count} subcollections",
     includeChildFolders: "Include subfolders",
+    showSubfolderContents: "Show subfolder contents",
+    showSubfolderContentsHint: "Include assets from this folder and all descendant folders when checked; show only this folder's assets when unchecked. Search always includes subfolders.",
     emptyFolders: "No folders yet",
     emptyManagedOrLinked: "No managed or linked folders yet",
     collapseFolder: "Collapse {name}",

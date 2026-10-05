@@ -83,6 +83,7 @@ Customize icons and color accents for managed library folders, linked folder roo
 
 - **Sidebar**: All assets, Trash, folders, collections, and smart collections. Click or drag to the empty space at the bottom to return to the library root; use the context menu on managed folders to import linked folders.
 - **Canvas**: Supports tile and masonry layouts; use the top toolbar to switch views and toggle visible card fields (filename, size, date, resolution, etc.).
+- **Show subfolder contents**: Use the checkbox beside the **Subfolders** heading. Checked includes assets in the current folder and all descendants; unchecked shows direct assets only. It also works at the library root. Each folder remembers its own choice across navigation and restarts. The **Content** heading shows the total result count. Text searches continue to include descendants.
 - **Hover scrub**: Hovering over a video or audio card displays a scrub bar to quickly jump and preview playback.
 - **Toolbar**: Search, advanced filters, sorting, and view controls.
 - **Inspector**: Displays information, tags, rating, favorite status, description, source URL, technical metadata, and AI analysis results for the selected asset.

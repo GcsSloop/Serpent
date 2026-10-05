@@ -96,7 +96,7 @@ async function openFolderContextMenu(window: Page, folderName: string) {
 
 // ---------------------------------------------------------------------------
 // REQ-FOLDER-009: folder browse defaults to direct children only; include
-// subfolders is an explicit scope-bar switch. REQ-FILTER-012: with the switch
+// subfolders is an explicit canvas checkbox. REQ-FILTER-012: with the switch
 // on, folder-scoped search recurses into descendants.
 // ---------------------------------------------------------------------------
 
@@ -171,12 +171,12 @@ test("folder browse stays direct until include-subfolders is checked", async () 
     await expect(window.locator(".scope-crumb-label.is-current")).toHaveText(
       "父文件夹",
     );
-    // REQ-FOLDER-009: include-subfolders lives beside the workspace title.
+    // The scope checkbox sits above the canvas folder cards.
     const includeSubfolders = window
-      .locator(".workspace-title")
-      .getByRole("button", { name: "包含子文件夹" });
+      .locator(".workspace-canvas")
+      .getByRole("checkbox", { name: "显示子文件夹内容" });
     await expect(includeSubfolders).toBeVisible();
-    await expect(includeSubfolders).toHaveAttribute("aria-pressed", "false");
+    await expect(includeSubfolders).not.toBeChecked();
     await expect(parentCard).toHaveCount(0, { timeout: 15_000 });
     await expect(childCard).toHaveCount(0);
 
@@ -184,16 +184,16 @@ test("folder browse stays direct until include-subfolders is checked", async () 
     // There is no explicit search button — submitting the form runs the query.
     await window.getByLabel("搜索资源库").fill("child-note");
     await window.getByLabel("搜索资源库").press("Enter");
-    await expect(includeSubfolders).toHaveAttribute("aria-pressed", "false");
+    await expect(includeSubfolders).not.toBeChecked();
     await expect(childCard).toBeVisible({ timeout: 15_000 });
     await expect(parentCard).toHaveCount(0);
 
     // The browse-only switch must not narrow a live recursive text search.
     await includeSubfolders.click();
-    await expect(includeSubfolders).toHaveAttribute("aria-pressed", "true");
+    await expect(includeSubfolders).toBeChecked();
     await expect(childCard).toBeVisible({ timeout: 15_000 });
     await includeSubfolders.click();
-    await expect(includeSubfolders).toHaveAttribute("aria-pressed", "false");
+    await expect(includeSubfolders).not.toBeChecked();
     await expect(childCard).toBeVisible({ timeout: 15_000 });
 
     // Clearing the term restores the parent's ordinary non-recursive browse.
@@ -205,7 +205,7 @@ test("folder browse stays direct until include-subfolders is checked", async () 
     // The explicit switch continues to control descendant inclusion when no
     // text search is active.
     await includeSubfolders.click();
-    await expect(includeSubfolders).toHaveAttribute("aria-pressed", "true");
+    await expect(includeSubfolders).toBeChecked();
     await expect(parentCard).toBeVisible({ timeout: 15_000 });
     await expect(childCard).toBeVisible({ timeout: 15_000 });
   } finally {

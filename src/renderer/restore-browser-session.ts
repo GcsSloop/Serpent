@@ -193,11 +193,14 @@ export async function applyStoredBrowserSession(
     restoredLocation = { kind: "trash", tombstoneId: null };
   } else if (session.scope.kind === "root") {
     setAssetScope("root");
+    const enabled = isFolderRecursiveEnabled(library.libraryId, "root");
+    folderRecursiveRef.current = enabled;
+    setFolderRecursive(enabled);
     restoredItems = (await loadContent(library, "root")) ?? [];
     searchScope = {
       kind: "folder",
       folderId: null,
-      recursive: false,
+      recursive: enabled,
     };
     restoredLocation = { kind: "root" };
   } else if (session.scope.kind === "folder") {

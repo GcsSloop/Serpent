@@ -109,12 +109,12 @@ test("include-subfolders hint pulses until the folder is expanded once", async (
       "父文件夹",
     );
 
-    const includeButton = window.getByRole("button", {
-      name: "包含子文件夹",
+    const includeButton = window.getByRole("checkbox", {
+      name: "显示子文件夹内容",
     });
     await expect(includeButton).toBeVisible();
     const hintButton = window.locator(
-      ".workspace-include-subfolders.is-feature-hinting",
+      ".canvas-include-subfolders.is-feature-hinting",
     );
     await expect(hintButton).toBeVisible({ timeout: 5_000 });
 
@@ -173,12 +173,16 @@ test("text search shows matching folders as the ordinary folder-card-row and nav
     });
     await expect(folderResult).toBeVisible({ timeout: 5_000 });
 
-    // A click on the result enters the folder (chooseFolder resets the search).
+    // A click enters the folder; ordinary navigation keeps the search term.
     await folderResult.click();
     await expect(window.locator(".scope-crumb-label.is-current")).toHaveText(
       "配色参考",
     );
-    // 配色参考 has no children → the ordinary folder-card-row is hidden again.
+    // Clear the preserved search to show the direct-child folder row.
+    await expect(searchBox).toHaveValue("配色");
+    await searchBox.fill("");
+    await searchBox.press("Enter");
+    // 配色参考 has no children, so the ordinary row disappears.
     await expect(window.locator(".folder-card-row")).toHaveCount(0, {
       timeout: 5_000,
     });
@@ -210,7 +214,7 @@ test("hovering a highlighted affordance for half a second dismisses it", async (
 
     await sidebarFolderRow(window, "父文件夹").click();
     const hintButton = window.locator(
-      ".workspace-include-subfolders.is-feature-hinting",
+      ".canvas-include-subfolders.is-feature-hinting",
     );
     await expect(hintButton).toBeVisible({ timeout: 5_000 });
 

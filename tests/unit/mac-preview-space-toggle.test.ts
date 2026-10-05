@@ -76,3 +76,24 @@ it("preserves typing, composition, modified shortcuts and modal controls", async
     container.remove();
   }
 });
+
+it("leaves Space on browse checkboxes to native activation", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const open = vi.fn();
+  function Shell() {
+    useMacPreviewSpaceToggle({ enabled: true, previewOpen: false, canOpen: true, open, close: vi.fn() });
+    return createElement("input", { type: "checkbox" });
+  }
+  try {
+    await act(async () => root.render(createElement(Shell)));
+    expect(container.firstElementChild!.dispatchEvent(new KeyboardEvent("keydown", {
+      key: " ", code: "Space", bubbles: true, cancelable: true,
+    }))).toBe(true);
+    expect(open).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});

@@ -44,9 +44,8 @@ export function resolveBrowseCanvasBodyLayout(
  *
  * Recursive browse flattens descendant assets into the canvas. Direct child
  * folder cards still appear at the top unless the user turns that off in
- * Settings (`showCardsWhenRecursive`). Non-folder scopes ("all" / "root")
- * keep their folder cards regardless — recursive is only enabled for a
- * concrete managed/linked folder id.
+ * Settings (`showCardsWhenRecursive`). The library root keeps its folder
+ * cards visible regardless of that preference.
  */
 export function shouldShowFolderBrowseCards(
   assetScope: string,

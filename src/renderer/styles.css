@@ -3273,6 +3273,63 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
   color: var(--accent-soft-fg);
 }
 
+.workspace-canvas.has-folder-browse-controls {
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+
+.folder-browse-section-header {
+  align-self: start;
+  justify-self: stretch;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--secondary);
+}
+
+.folder-browse-section-header h2 {
+  margin: 0;
+  font-size: calc(12px * var(--ui-font-scale));
+  font-weight: var(--ui-font-weight-medium);
+}
+
+.folder-content-header {
+  margin-top: 12px;
+}
+
+.workspace-canvas.has-folder-browse-controls > .folder-card-row.is-folders-only {
+  padding-bottom: 0;
+}
+
+.canvas-include-subfolders {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 5px;
+  border-radius: 5px;
+  font-size: calc(12px * var(--ui-font-scale));
+  cursor: pointer;
+}
+
+.canvas-include-subfolders input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+
+.canvas-include-subfolders:has(input:disabled) {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* Serpent-b8a853: feature-hint attention highlight. Applies to any affordance
    that teaches a hidden feature (include-subfolders icon, the sidebar
    "导入链接文件夹" button), always visible and pulsing. Functional cue, not
@@ -3280,6 +3337,7 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
    app-wide reduce-motion rule collapses animations to 0.01ms, which would
    otherwise make the hint invisible). Theme tokens only. */
 .workspace-include-subfolders.is-feature-hinting,
+.canvas-include-subfolders.is-feature-hinting,
 .tiny-action.is-feature-hinting {
   background: var(--accent-soft);
   color: var(--accent-soft-fg);
@@ -3304,6 +3362,7 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
 
 @media (prefers-reduced-motion: reduce) {
   .workspace-include-subfolders.is-feature-hinting,
+  .canvas-include-subfolders.is-feature-hinting,
   .tiny-action.is-feature-hinting {
     animation-duration: 2.2s !important;
     animation-iteration-count: infinite !important;

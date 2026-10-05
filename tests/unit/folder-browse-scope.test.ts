@@ -11,11 +11,14 @@ describe('folderBrowseScope (REQ-FOLDER-009)', () => {
     expect(folderBrowseScope('all', false)).toBeUndefined();
   });
 
-  it('keeps library root non-recursive', () => {
+  it('honours the switch at the library root as well', () => {
     expect(folderBrowseScope('root', true)).toEqual({
       kind: 'folder',
       folderId: null,
-      recursive: false,
+      recursive: true,
+    });
+    expect(folderBrowseScope('root', false)).toEqual({
+      kind: 'folder', folderId: null, recursive: false,
     });
   });
 

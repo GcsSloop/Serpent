@@ -34,7 +34,7 @@ export function useMacPreviewSpaceToggle(options: MacPreviewSpaceToggleOptions) 
       if (target?.closest('[role="dialog"], [role="menu"], [role="listbox"], select')) return;
       if (!current.previewOpen) {
         if (!current.canOpen) return;
-        if (target?.closest('button:not(.asset-card), a, [role="button"]:not(.asset-card), [role="menuitem"]')) return;
+        if (target?.closest('input, button:not(.asset-card), a, [role="button"]:not(.asset-card), [role="menuitem"]')) return;
       }
       event.preventDefault();
       event.stopImmediatePropagation();

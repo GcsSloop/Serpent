@@ -5,7 +5,7 @@ export type AssetScopeId = "all" | "root" | (string & {});
 /**
  * REQ-FOLDER-009: folder browse defaults to direct children only
  * (`recursive: false`). Linked virtual subdirectories use the same switch.
- * Root stays non-recursive; "all assets" has no folder scope.
+ * The library root uses the same switch; "all assets" has no folder scope.
  */
 export function folderBrowseScope(
   scope: AssetScopeId,
@@ -13,7 +13,7 @@ export function folderBrowseScope(
 ): SearchScope | undefined {
   if (scope === "all") return undefined;
   if (scope === "root") {
-    return { kind: "folder", folderId: null, recursive: false };
+    return { kind: "folder", folderId: null, recursive };
   }
   return { kind: "folder", folderId: scope, recursive };
 }

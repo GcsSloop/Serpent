@@ -173,6 +173,8 @@ export const zhCN = {
     windowClose: "关闭",
   },
   scope: {
+    subfoldersCount: "子文件夹（{count}）",
+    contentCount: "内容（{count}）",
     workspace: "工作区",
     currentBrowseScope: "当前浏览范围",
     allAssets: "所有资产",
@@ -216,6 +218,8 @@ export const zhCN = {
     includeChildCollections: "包含子合集",
     childCollectionCount: "子合集 {count} 个",
     includeChildFolders: "包含子文件夹",
+    showSubfolderContents: "显示子文件夹内容",
+    showSubfolderContentsHint: "勾选时显示当前文件夹及所有子文件夹中的素材；取消勾选时只显示当前文件夹的素材。搜索始终包含子文件夹。",
     emptyFolders: "尚无文件夹",
     emptyManagedOrLinked: "尚无托管或链接文件夹",
     collapseFolder: "折叠 {name}",
