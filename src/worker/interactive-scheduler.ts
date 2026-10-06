@@ -754,7 +754,7 @@ export class InteractiveScheduler {
         : hasActiveMutation
           ? mayReadDuringOtherLibraryClose
           : isInteractivePerformanceLane(lane)
-            ? (lane === 'interactive-control'
+            ? !hasQueuedMutation && (lane === 'interactive-control'
               // 只针对长耗时的 viewer-upgrade（冷预览/RAW 解码）另开槽；visible-media
               // 仍需保持原来的串行，否则「变更需要完全空闲」的保证会被破坏。
               ? activeInteractiveControl < 1

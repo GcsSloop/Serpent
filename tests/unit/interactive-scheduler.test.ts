@@ -760,6 +760,27 @@ describe('InteractiveScheduler', () => {
     expect(events).toEqual(['interactive', 'write']);
   });
 
+  it('does not let fresh browse requests overtake a queued tag write', async () => {
+    const scheduler = new InteractiveScheduler();
+    const events: string[] = [];
+    let release!: () => void;
+    const first = scheduler.schedule(
+      { requestId: 'active', lane: 'interactive-control', libraryId: 'library-1' },
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    const write = scheduler.schedule(
+      { requestId: 'tag', lane: 'mutation', libraryId: 'library-1' },
+      () => { events.push('write'); },
+    );
+    const reads = Array.from({ length: 5 }, (_, index) => scheduler.schedule(
+      { requestId: `browse-${index}`, lane: 'interactive-control', libraryId: 'library-1' },
+      () => { events.push(`browse-${index}`); },
+    ));
+    release();
+    await Promise.all([first, write, ...reads]);
+    expect(events).toEqual(['write', 'browse-0', 'browse-1', 'browse-2', 'browse-3', 'browse-4']);
+  });
+
   it('reports the lane holder when queued work cannot be admitted', async () => {
     const stalls: SchedulerStallInfo[] = [];
     const scheduler = new InteractiveScheduler({

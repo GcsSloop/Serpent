@@ -573,6 +573,8 @@ export function useBrowsePagination(
                 offset,
               })
             : await fetchLivePage();
+        // Old scopes must not downgrade the new session or issue fallback queries.
+        if (generation !== generationRef.current) return;
         if (isBrowseSessionPageUnusable(result)) {
           // Background catalog writes (sequence frames, ignore paths, AI rows)
           // bump browse_change_sequence and mark the snapshot stale. Stopping
@@ -662,10 +664,12 @@ export function useBrowsePagination(
           layout: layoutRef.current,
         }));
       } finally {
-        for (const covered of coveredOffsets) {
-          inFlightOffsetsRef.current.delete(covered);
+        if (generation === generationRef.current) {
+          for (const covered of coveredOffsets) {
+            inFlightOffsetsRef.current.delete(covered);
+          }
+          if (inFlightOffsetsRef.current.size === 0) setLoadingMore(false);
         }
-        if (inFlightOffsetsRef.current.size === 0) setLoadingMore(false);
       }
     },
     [
