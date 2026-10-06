@@ -87,6 +87,8 @@ import {
   sliceMediaJobListPage,
 } from '../shared/media-jobs';
 import type { RawMetadataBackfillProbeOutcome } from './raw-metadata-backfill-gate';
+import { renderPdfThumbnail } from './pdf-thumbnail-renderer';
+import { shutdownIsolatedMediaWorkers } from './isolated-media-worker';
 
 export interface RawMetadataBackfillAdmissionState {
   token: string;
@@ -4479,6 +4481,7 @@ function killMediaProcess(processHandle: ChildProcess, signal: 'SIGTERM' | 'SIGK
  * job controller alone is not enough to prevent an ffmpeg orphan.
  */
 export async function shutdownActiveMediaProcesses(timeoutMs = 1_000): Promise<void> {
+  await shutdownIsolatedMediaWorkers();
   const processes = [...activeMediaProcesses];
   if (processes.length === 0) return;
 
@@ -4692,6 +4695,8 @@ const interactiveSharpDecoderSemaphore = new AsyncSemaphore(MEDIA_INTERACTIVE_DE
 // a time is the intentional safety limit even on high-core machines.
 const ffmpegDecoderSemaphore = new AsyncSemaphore(1);
 const oiioDecoderSemaphore = new AsyncSemaphore(1);
+// Bound PDF raster memory across every open library.
+const pdfDecoderSemaphore = new AsyncSemaphore(1);
 
 /** True when a visible/viewer Sharp job can start without aborting a running background decode. */
 export function hasIdleForegroundImageSlot(): boolean {
@@ -4998,7 +5003,9 @@ export interface AssetsChangedEvent {
   missingCount: number;
   source?: 'watcher' | 'text-save' | 'content-replace' | 'client' | 'sync';
   type: 'asset.changed';
+  changeKind?: 'tags';
 }
+
 
 export interface ImportExpiryClock {
   cancel(handle: unknown): void;
@@ -6964,6 +6971,14 @@ export class LibraryService {
 
   private emitClientAssetsChanged(libraryId: string, changedCount: number): void {
     this.emitAssetsChanged(libraryId, changedCount, 'client');
+  }
+
+  private emitTagAssetsChanged(libraryId: string, changedCount: number): void {
+    if (changedCount <= 0) return;
+    this.options.onAssetsChanged?.({
+      type: 'asset.changed', libraryId, changedCount, missingCount: 0,
+      source: this.syncReplayDepth > 0 ? 'sync' : 'client', changeKind: 'tags',
+    });
   }
 
   /**
@@ -19386,7 +19401,7 @@ export class LibraryService {
     for (const assetId of eligibleAssetIds) {
       this.syncAssetSearchContent(openLibrary.connection, assetId);
     }
-    this.emitClientAssetsChanged(input.libraryId, assignedCount);
+    this.emitTagAssetsChanged(input.libraryId, assignedCount);
     return { assignedCount, skipped };
   }
 
@@ -19436,7 +19451,7 @@ export class LibraryService {
     for (const assetId of eligibleAssetIds) {
       if (removedCount > 0) this.syncAssetSearchContent(openLibrary.connection, assetId);
     }
-    this.emitClientAssetsChanged(input.libraryId, removedCount);
+    this.emitTagAssetsChanged(input.libraryId, removedCount);
     return { removedCount, skipped };
   }
 
@@ -23167,7 +23182,7 @@ export class LibraryService {
     }
 
     // Serpent-8ca259: PDF thumbnails render the first page with pdfjs-dist in
-    // the Worker (pure JS, no offscreen window). HTML thumbnails render
+    // an isolated decoder thread. HTML thumbnails render
     // offscreen in Main through the injected documentThumbnailRenderer.
     // Both are enqueued like any other asset — the enqueue gate must list the
     // document extensions (see enqueueThumbnailJobs supportedExtensions).
@@ -23567,160 +23582,37 @@ export class LibraryService {
       ) {
         throw new Error('Illustrator file has no PDF-compatible representation.');
       }
-      const pdfBytes = readFileSync(assetPath);
-      if (pdfBytes.length === 0) {
-        throw new Error('PDF file is empty.');
-      }
+      const rendered = await pdfDecoderSemaphore.run(execution.signal, () =>
+        renderPdfThumbnail(assetPath, artifactAbsPath, execution.signal),
+      );
       if (execution.signal?.aborted) {
-        throw new DOMException('Media job cancelled before PDF load.', 'AbortError');
+        throw new DOMException('Media job cancelled after PDF render.', 'AbortError');
       }
-      // pdfjs-dist 6.x ships an ESM build; load lazily so Worker startup is
-      // unaffected when no PDFs are queued. The legacy build runs in Node.
-      // Electron's bundled Node predates DOMMatrix (added in Node 24), and
-      // pdfjs instantiates `new DOMMatrix` at module scope — importing it
-      // without a polyfill crashes the whole Library Worker (Serpent-8ca259).
-      // @napi-rs/canvas ships matching geometry classes; install them as
-      // globals before pdfjs loads.
-      const {
-        createCanvas,
-        DOMMatrix,
-        DOMPoint,
-        DOMRect,
-        Path2D,
-        ImageData,
-      } = await import('@napi-rs/canvas');
-      const workerGlobal = globalThis as {
-        DOMMatrix?: unknown;
-        DOMPoint?: unknown;
-        DOMRect?: unknown;
-        Path2D?: unknown;
-        ImageData?: unknown;
-      };
-      if (workerGlobal.DOMMatrix === undefined) {
-        Object.assign(globalThis, { DOMMatrix, DOMPoint, DOMRect });
-      }
-      if (workerGlobal.Path2D === undefined) {
-        Object.assign(globalThis, { Path2D });
-      }
-      if (workerGlobal.ImageData === undefined) {
-        Object.assign(globalThis, { ImageData });
-      }
-      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      // The bundled pdfjs defaults workerSrc to "./pdf.worker.mjs" relative to
-      // its chunk, which does not exist in the build directory; the fake
-      // worker then fails to load the worker module. Point at the real module
-      // shipped next to the package (resolved from the bundle's location).
-      const { createRequire } = await import('node:module');
-      const { pathToFileURL } = await import('node:url');
-      const requireFromBundle = createRequire(__filename);
-      pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(
-        requireFromBundle.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs'),
-      ).href;
-      // pdfjs 6.x 把 wasm（jbig2/openjpeg）、cmaps、standard_fonts 放在
-      // pdfjs-dist 顶层资源目录，不在 pdf.worker.mjs 同目录；不显式提供
-      // wasmUrl 时，含 JBIG2 压缩图片的 PDF（扫描论文常见）无法解码
-      // （ERR_MODULE_NOT_FOUND nulljbig2_nowasm_fallback.js），缩略图生成
-      // 失败 → 文件夹封面反复失效重试。getDocument 的 URL 需以 / 结尾。
-      const pdfjsRoot = path.dirname(requireFromBundle.resolve('pdfjs-dist/package.json'));
-      const wasmUrl = pathToFileURL(`${pdfjsRoot}/wasm/`).href;
-      const cMapUrl = pathToFileURL(`${pdfjsRoot}/cmaps/`).href;
-      const standardFontDataUrl = pathToFileURL(`${pdfjsRoot}/standard_fonts/`).href;
-      // Vite bundling breaks pdfjs's own node_utils bootstrap (it calls
-      // createRequire(import.meta.url), which is undefined in the CJS
-      // bundle), so internal image painting would hit the DOM canvas factory
-      // and crash. Provide an explicit @napi-rs/canvas-backed factory class;
-      // pdfjs instantiates it with `new CanvasFactory({ ownerDocument,
-      // enableHWA })`.
-      class NapiCanvasFactory {
-        constructor(options: { ownerDocument?: unknown; enableHWA?: boolean } = {}) {
-          void options;
-        }
-        create(width: number, height: number) {
-          const canvas = createCanvas(width, height);
-          return { canvas, context: canvas.getContext('2d') };
-        }
-        reset(
-          canvasAndContext: { canvas: { width: number; height: number }; context: unknown },
-          width: number,
-          height: number,
-        ) {
-          canvasAndContext.canvas.width = width;
-          canvasAndContext.canvas.height = height;
-        }
-        destroy(canvasAndContext: { canvas: { width: number; height: number }; context: unknown }) {
-          // @napi-rs/canvas canvases are garbage-collected; no explicit disposal.
-          void canvasAndContext;
-        }
-      }
-      const loadingTask = pdfjs.getDocument({
-        data: new Uint8Array(pdfBytes),
-        CanvasFactory: NapiCanvasFactory,
-        wasmUrl,
-        cMapUrl,
-        standardFontDataUrl,
-      });
-      const pdfDocument = await loadingTask.promise;
-      try {
-        const page = await pdfDocument.getPage(1);
-        // Render at a fixed 1024px-longest-edge for a crisp 512 card after
-        // sharp downscale (pdfjs viewport units are PDF points, 72dpi).
-        const baseViewport = page.getViewport({ scale: 1 });
-        const longestEdge = Math.max(baseViewport.width, baseViewport.height);
-        const scale = longestEdge > 0 ? 1024 / longestEdge : 1;
-        const viewport = page.getViewport({ scale });
-        const canvas = createCanvas(
-          Math.max(1, Math.ceil(viewport.width)),
-          Math.max(1, Math.ceil(viewport.height)),
+      openLibrary.connection
+        .prepare(
+          `INSERT INTO revision_artifacts
+             (artifact_id, revision_id, kind, mime_type, byte_size, file_path,
+              width, height, generator_version, status, generated_at)
+           VALUES (?, ?, 'thumbnail', 'image/jpeg', ?, ?, ?, ?, ?, 'ready', ?)`,
+        )
+        .run(
+          artifactId,
+          revisionId,
+          rendered.byteSize,
+          artifactRelPath,
+          rendered.width,
+          rendered.height,
+          rendered.generatorVersion,
+          new Date().toISOString(),
         );
-        const context = canvas.getContext('2d');
-        await page.render({
-          canvas: canvas as never,
-          canvasContext: context as never,
-          viewport,
-        }).promise;
-        if (execution.signal?.aborted) {
-          throw new DOMException('Media job cancelled after PDF render.', 'AbortError');
-        }
-        const pngBuffer = canvas.toBuffer('image/png');
-        const width = Math.round(viewport.width);
-        const height = Math.round(viewport.height);
-        await runSharpDecoder(
-          execution.signal,
-          execution.lane,
-          async () => {
-            const sharp = this.options.sharpFn ?? requireSharp();
-            await sharp(pngBuffer)
-              .rotate()
-              .toColourspace('srgb')
-              .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
-              .jpeg({ quality: 72 })
-              .toFile(artifactAbsPath);
-          },
-          { sourceByteSize: pngBuffer.byteLength, width, height },
-        );
-        const outputStat = statSync(artifactAbsPath);
-        openLibrary.connection
-          .prepare(
-            `INSERT INTO revision_artifacts
-               (artifact_id, revision_id, kind, mime_type, byte_size, file_path,
-                width, height, generator_version, status, generated_at)
-             VALUES (?, ?, 'thumbnail', 'image/jpeg', ?, ?, ?, ?, ?, 'ready', ?)`,
-          )
-          .run(
-            artifactId,
-            revisionId,
-            outputStat.size,
-            artifactRelPath,
-            width || null,
-            height || null,
-            `pdfjs@${pdfjs.version ?? '6'}`,
-            new Date().toISOString(),
-          );
-        return { artifactId };
-      } finally {
-        await loadingTask.destroy();
-      }
+      return { artifactId };
     } catch (error) {
+      // The thread has exited before rejecting, so no late writer can recreate
+      // a cancelled/failed artifact after this cleanup.
+      rmSync(artifactAbsPath, { force: true });
+      if (execution.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        throw error;
+      }
       // Failed PDF artifacts must land in revision_artifacts so the card shows
       // the failure badge and repair can re-run, mirroring image failures.
       try {

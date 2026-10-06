@@ -404,6 +404,8 @@ export const assetChangeEventSchema = z.strictObject({
    * 导航与画布；自动同步调度器必须忽略，避免回放后再 `sync.run`。
    */
   source: z.enum(['watcher', 'text-save', 'client', 'content-replace', 'sync']).optional(),
+  /** Tags do not change file membership or thumbnail identity. */
+  changeKind: z.literal('tags').optional(),
 });
 
 export type AssetChangeEvent = z.infer<typeof assetChangeEventSchema>;

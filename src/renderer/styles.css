@@ -14188,3 +14188,10 @@ select.ai-config-input.ai-config-languages {
   justify-content: space-between;
   gap: var(--ui-space-3);
 }
+
+.inspector-tag-saving {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 6px;
+}

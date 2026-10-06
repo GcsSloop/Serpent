@@ -790,6 +790,7 @@ export const en = {
     embeddedCustomTag: "Other tag",
     addTag: "Add tag",
     removeTag: "Remove this tag",
+    savingTags: "Saving tags…",
     noTags: "No tags yet",
     searchOrCreateTag: "Search or create tags, separate with commas",
     createTagNamed: "Create tag “{name}”",

@@ -10815,6 +10815,24 @@ function AppInner() {
     };
     const unsubscribe = api.onAssetsChanged((event) => {
       if (event.libraryId !== effectLibraryId || !isEffectLibraryCurrent()) return;
+      // One tag edit must not rebuild every folder cover and restart the
+      // visible media wave. Search/tag-dependent scopes still reconcile below.
+      if (event.changeKind === "tags" && !searchValue.trim() && !tagFilter.trim()
+        && !activeTagId && !activeSmartCollectionId) {
+        void refreshOperationHistory();
+        const selectedId = selectedAssetIdRef.current;
+        void Promise.all([
+          api.listTags({ libraryId: effectLibraryId }),
+          selectedId ? api.getAssetMetadata({ libraryId: effectLibraryId, assetId: selectedId }) : null,
+        ]).then(([tagResult, metadata]) => {
+          if (!isEffectLibraryCurrent()) return;
+          if (tagResult.ok) setTags(tagResult.value);
+          if (metadata?.ok && selectedId && selectedAssetIdRef.current === selectedId) {
+            applyLoadedMetadata(selectedId, metadata.value);
+          }
+        }).catch(() => undefined);
+        return;
+      }
       setLayoutThumbnailArtifacts({
         libraryId: library.libraryId,
         ids: new Map(),
@@ -10921,7 +10939,7 @@ function AppInner() {
       unsubscribe();
       unsubscribeLibraryChanged();
     };
-  }, [api, applyLoadedMetadata, library, locale, refreshOperationHistory, setError, setNotice, t]);
+  }, [activeSmartCollectionId, activeTagId, api, applyLoadedMetadata, library, locale, refreshOperationHistory, searchValue, setError, setNotice, t, tagFilter]);
 
   useEffect(() => {
     if (!api) return;
@@ -14672,9 +14690,9 @@ function AppInner() {
         handleAuthorSave={handleAuthorSave}
         library={library}
         loadMetadata={loadMetadata}
-        onAssignTagToAsset={(tagId) => void handleInspectorAssignTag(tagId)}
-        onCreateAndAssignTag={(tagName) => void handleInspectorCreateAndAssignTag(tagName)}
-        onApplyTagNames={(tagNames) => void handleInspectorApplyTagNames(tagNames)}
+        onAssignTagToAsset={(tagId) => handleInspectorAssignTag(tagId)}
+        onCreateAndAssignTag={(tagName) => handleInspectorCreateAndAssignTag(tagName)}
+        onApplyTagNames={(tagNames) => handleInspectorApplyTagNames(tagNames)}
         onOpenSourceUrl={handleOpenSourceUrl}
         onPaletteColorCopy={(color, copied) => {
           if (copied) {
@@ -14683,7 +14701,7 @@ function AppInner() {
             setError(t("toast.colorCopyUnavailable"));
           }
         }}
-        onRemoveTagFromAsset={(tagId) => void handleInspectorRemoveTag(tagId)}
+        onRemoveTagFromAsset={(tagId) => handleInspectorRemoveTag(tagId)}
         selectedAsset={selectedAsset}
         selectedAssets={selectedAssets}
         multiEdit={multiEdit}

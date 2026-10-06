@@ -215,16 +215,6 @@ if (!parentPort) {
   throw new Error('Library Worker must be started by the Electron main process.');
 }
 
-// Serpent-8ca259: Electron's UtilityProcess sets process.type = 'utility'.
-// pdfjs-dist's isNodeJS detection explicitly excludes Electron processes with
-// a non-browser process.type, so pdfjs would take its browser code paths
-// (DOM canvas factory, FontFace font loading, real Worker construction) —
-// none of which exist inside the Library Worker. Neutralizing process.type
-// makes pdfjs load its Node build paths (fake worker, Node canvas factory,
-// embedded-font support), which is what PDF thumbnail generation needs.
-// Nothing else in the Worker branches on process.type.
-Object.defineProperty(process, 'type', { value: undefined, configurable: true });
-
 const e2eTerminateProcessAt = (() => {
   if (process.env.SERPENT_E2E !== '1') return undefined;
   const configured = process.env.SERPENT_E2E_LIBRARY_TERMINATE_AT;
@@ -234,9 +224,11 @@ const e2eTerminateProcessAt = (() => {
 
 const libraryService = new LibraryService({
   onAssetsChanged: (event) => {
-    lastVisibleWindowKeyByLibrary.delete(event.libraryId);
-    lastVisibleWindowAssetIdsByLibrary.delete(event.libraryId);
-    thumbnailCompletionFanout.setImmediateAssetIds(event.libraryId, []);
+    if (event.changeKind !== 'tags') {
+      lastVisibleWindowKeyByLibrary.delete(event.libraryId);
+      lastVisibleWindowAssetIdsByLibrary.delete(event.libraryId);
+      thumbnailCompletionFanout.setImmediateAssetIds(event.libraryId, []);
+    }
     parentPort.postMessage(event);
   },
   onLibraryChanged: (event) => {

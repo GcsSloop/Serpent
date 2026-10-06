@@ -79,6 +79,37 @@ test("packaged macOS app toggles previews and saves an inline filename edit", as
     await viewer.getByRole("slider", { name: "拖动视频进度" }).focus();
     await window.keyboard.press("Space");
     await expect(viewer).toBeHidden();
+
+    // Keep the response pending briefly to verify visible save feedback and
+    // consecutive edits through the real Inspector handlers/preload bridge.
+    await app.evaluate(({ ipcMain }) => {
+      const handlers = (ipcMain as unknown as {
+        _invokeHandlers: Map<string, (...args: unknown[]) => Promise<unknown>>;
+      })._invokeHandlers;
+      const handler = handlers.get("serpent:library:request")!;
+      handlers.set("serpent:library:request", async (...args: unknown[]) => {
+        const result = await handler(...args);
+        if ((args[1] as { type?: string })?.type === "tag.assign.request") {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        return result;
+      });
+    });
+    await renamed.click();
+    const addTag = window.locator(".inspector-tags-header button");
+    await expect(addTag).toBeEnabled();
+    for (const name of ["连续修改一", "连续修改二"]) {
+      await addTag.click();
+      await window.locator(".tag-add-input").fill(name);
+      await window.keyboard.press("Enter");
+      await expect(window.locator(".inspector-tag-saving")).toHaveText("正在保存标签…");
+      await expect(addTag).toBeEnabled();
+      await expect(window.locator(".inspector-tags-section .tag-chip-name").filter({ hasText: name })).toBeVisible();
+      await expect(window.locator(".inspector-tag-saving")).toBeHidden();
+    }
+    await window.locator(".tag-chip").filter({ hasText: "连续修改一" }).getByRole("button", { name: "移除此标签" }).click();
+    await expect(window.locator(".inspector-tags-section .tag-chip-name").filter({ hasText: "连续修改一" })).toHaveCount(0);
+    await expect(window.locator(".inspector-tags-section .tag-chip-name").filter({ hasText: "连续修改二" })).toBeVisible();
   } finally {
     await app.close();
     rmSync(root, { recursive: true, force: true });

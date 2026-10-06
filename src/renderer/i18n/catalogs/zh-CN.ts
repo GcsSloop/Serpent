@@ -776,6 +776,7 @@ export const zhCN = {
     embeddedCustomTag: "其他标签",
     addTag: "添加标签",
     removeTag: "移除此标签",
+    savingTags: "正在保存标签…",
     noTags: "尚未添加标签",
     searchOrCreateTag: "搜索或创建标签，逗号分隔多个",
     createTagNamed: "创建标签 “{name}”",

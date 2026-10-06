@@ -196,10 +196,10 @@ export interface InspectorPanelProps {
   handleAuthorInput: (e: React.ChangeEvent<HTMLInputElement>) => void;
   // Tag chip props (REQ-TAG-003)
   allTags: TagSummary[];
-  onAssignTagToAsset?: (tagId: string) => void;
-  onRemoveTagFromAsset?: (tagId: string) => void;
-  onCreateAndAssignTag?: (tagName: string) => void;
-  onApplyTagNames?: (tagNames: string[]) => void;
+  onAssignTagToAsset?: (tagId: string) => void | Promise<void>;
+  onRemoveTagFromAsset?: (tagId: string) => void | Promise<void>;
+  onCreateAndAssignTag?: (tagName: string) => void | Promise<void>;
+  onApplyTagNames?: (tagNames: string[]) => void | Promise<void>;
   // REQ-MENU-007 / REQ-SELECT-004: multi-select UE edit model (null = single-asset path).
   multiEdit?: InspectorMultiEditModel | null;
   /** 点击色卡分段复制颜色后的反馈（toast 由 App 统一发）。copied=false 表示剪贴板写入失败。 */
@@ -728,9 +728,30 @@ export function InspectorPanel(props: InspectorPanelProps) {
     : Boolean(selectedAsset?.favorite);
   const displaySourceUrl = metadataReady ? editSourceUrl : "";
 
+  const inspectorSelectedAssetIds = useMemo(() => {
+    if (selectedAssets.length > 0) {
+      return selectedAssets.map((asset) => asset.assetId);
+    }
+    return selectedAsset ? [selectedAsset.assetId] : [];
+  }, [selectedAsset, selectedAssets]);
+
   // Tag input state
   const [tagInputValue, setTagInputValue] = useState("");
   const [pendingTagNames, setPendingTagNames] = useState<string[]>([]);
+  const [tagWrites, setTagWrites] = useState<Record<string, number>>({});
+  const tagWriteTarget = inspectorSelectedAssetIds.join(',');
+  const trackTagWrite = (operation: () => void | Promise<void>) => {
+    const target = tagWriteTarget;
+    setTagWrites((current) => ({ ...current, [target]: (current[target] ?? 0) + 1 }));
+    void Promise.resolve().then(operation).catch(() => undefined).finally(() => {
+      setTagWrites((current) => {
+        const next = { ...current };
+        if ((next[target] ?? 0) <= 1) delete next[target];
+        else next[target] = next[target]! - 1;
+        return next;
+      });
+    });
+  };
   const [showTagInput, setShowTagInput] = useState(false);
   const [activeTagSuggestionIndex, setActiveTagSuggestionIndex] = useState(-1);
   const tagInputRef = useRef<HTMLInputElement>(null);
@@ -943,14 +964,14 @@ export function InspectorPanel(props: InspectorPanelProps) {
         (tag) => tag.name.toLocaleLowerCase() === only.toLocaleLowerCase(),
       );
       if (exactTag && !displayedTagIds.has(exactTag.tagId)) {
-        onAssignTagToAsset?.(exactTag.tagId);
+        trackTagWrite(() => onAssignTagToAsset?.(exactTag.tagId));
       } else if (!exactTag) {
-        onCreateAndAssignTag?.(only);
+        trackTagWrite(() => onCreateAndAssignTag?.(only));
       }
       closeTagInput();
       return;
     }
-    onApplyTagNames?.(names);
+    trackTagWrite(() => onApplyTagNames?.(names));
     closeTagInput();
   };
 
@@ -1161,13 +1182,6 @@ export function InspectorPanel(props: InspectorPanelProps) {
     return metadata ? buildEmbeddedMetadataRows(metadata) : [];
   }, [audioTechMetadata, selectedAsset, selectionCount, videoTechMetadata]);
 
-  const inspectorSelectedAssetIds = useMemo(() => {
-    if (selectedAssets.length > 0) {
-      return selectedAssets.map((asset) => asset.assetId);
-    }
-    return selectedAsset ? [selectedAsset.assetId] : [];
-  }, [selectedAsset, selectedAssets]);
-
   return (
     <PaneSurface
       className="inspector-pane"
@@ -1225,6 +1239,9 @@ export function InspectorPanel(props: InspectorPanelProps) {
                 size={12}
               />
             </div>
+            {(tagWrites[tagWriteTarget] ?? 0) > 0 && (
+              <span className="inspector-tag-saving" role="status">{t("inspector.savingTags")}</span>
+            )}
             <div className="tag-chips-container">
               {displayedTags.map((tag) => (
                 <span
@@ -1249,7 +1266,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                   {onRemoveTagFromAsset && (
                     <button
                       className="tag-chip-remove"
-                      onClick={() => onRemoveTagFromAsset(tag.id)}
+                      onClick={() => trackTagWrite(() => onRemoveTagFromAsset(tag.id))}
                       type="button"
                       {...iconActionAttrs(t("inspector.removeTag"))}
                     >
