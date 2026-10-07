@@ -102,3 +102,40 @@ test("ai.config.get maps the stored config onto the renderer payload", async () 
     hasKey: true,
   });
 });
+
+test("local connection probes do not require credentials or a responsive library Worker", async () => {
+  const probeAiConnection = vi.fn(async () => ({ success: true }));
+  const requestWorker = vi.fn(async () => { throw new Error('Worker blocked'); });
+  await expect(tryHandleAiOwnedRequest({
+    type: 'ai.test-connection.request', apiFormat: 'openai_responses',
+    baseUrl: 'http://127.0.0.1:1234/v1', model: ' local-model ',
+  }, runtime({ getDecryptedApiKey: () => { throw new Error('Unreadable key'); },
+    workerAvailable: () => false, requestWorker, probeAiConnection,
+  }))).resolves.toMatchObject({ ok: true, type: 'ai.test-connection.result', success: true });
+  expect(requestWorker).not.toHaveBeenCalled();
+  expect(probeAiConnection).toHaveBeenCalledWith(expect.objectContaining({ apiKey: '', model: 'local-model' }));
+});
+
+test("switching from keyless local AI to a remote provider still requires a decryptable key", async () => {
+  const request = {
+    type: 'ai.config.set.request' as const, apiFormat: 'openai_responses' as const,
+    model: ' remote-model ', baseUrl: 'https://example.com/v1',
+    autoAnalyzeEnabled: false, disclaimerAccepted: true,
+  };
+  const state = runtime({
+    loadAiConfig: () => config({ baseUrl: 'http://127.0.0.1:1234/v1' }),
+    getDecryptedApiKey: () => { throw new Error('Unreadable key'); },
+    workerAvailable: () => false,
+  });
+  await expect(tryHandleAiOwnedRequest(request, state)).resolves.toMatchObject({
+    ok: false, error: { code: 'AI_SETTINGS_INCOMPLETE' },
+  });
+  expect(state.saveAiConfig).not.toHaveBeenCalled();
+  await expect(tryHandleAiOwnedRequest({ ...request, baseUrl: 'http://127.0.0.1:1234/v1', concurrencyLimit: 16 }, state)).resolves.toMatchObject({ ok: true });
+  expect(state.saveAiConfig).toHaveBeenCalledWith(expect.objectContaining({ model: 'remote-model', concurrencyLimit: 2 }));
+});
+
+vi.mock("../../src/main/ai-credentials", async () => {
+  const { resolveAiApiKey } = await import("../../src/shared/local-ai");
+  return { resolveAiRequestKey: async (...args: Parameters<typeof resolveAiApiKey>) => resolveAiApiKey(...args) };
+});

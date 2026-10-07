@@ -1801,6 +1801,7 @@ export const library: SerpentLibraryApi = Object.freeze({
       maxDescriptionCharsZh: number;
       maxDescriptionWordsEn: number;
       outputStyle: 'normal' | 'concise' | 'rigorous';
+      reasoningMode?: 'auto' | 'service_default' | 'off';
       ratingRubric: string;
       customDescriptionPrompt: string;
       customTagPrompt: string;
@@ -1830,6 +1831,7 @@ export const library: SerpentLibraryApi = Object.freeze({
       maxDescriptionCharsZh: number;
       maxDescriptionWordsEn: number;
       outputStyle: 'normal' | 'concise' | 'rigorous';
+      reasoningMode?: 'auto' | 'service_default' | 'off';
       ratingRubric: string;
       customDescriptionPrompt: string;
       customTagPrompt: string;
@@ -2364,11 +2366,13 @@ export const library: SerpentLibraryApi = Object.freeze({
   async testAiConnection({
     apiFormat,
     model,
+    probeMode,
     apiKey,
     baseUrl,
   }: {
     apiFormat: AiApiFormat;
     model: string;
+    probeMode?: 'inference' | 'reachability';
     apiKey?: string;
     baseUrl?: string;
   }): Promise<LibraryApiResult<{ success: boolean; errorKind?: string; reason?: string }>> {
@@ -2376,6 +2380,7 @@ export const library: SerpentLibraryApi = Object.freeze({
       type: 'ai.test-connection.request',
       apiFormat,
       model,
+      ...(probeMode ? { probeMode } : {}),
       ...(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
       ...(baseUrl?.trim() ? { baseUrl: baseUrl.trim() } : {}),
     });

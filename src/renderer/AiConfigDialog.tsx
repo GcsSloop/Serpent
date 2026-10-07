@@ -1,3 +1,4 @@
+import { isLocalOpenAiEndpoint, normalizeEndpointAiConcurrency, type AiReasoningMode } from '../shared/local-ai';
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -10,7 +11,6 @@ import {
   type AiOutputStyle,
 } from "../shared/ai-analysis-settings";
 import { normalizeAiAnalysisImageEdgePx } from "../shared/ai-analysis-image";
-import { normalizeAiAnalysisConcurrency } from "../shared/ai-concurrency";
 import {
   AI_API_FORMATS,
   AI_API_FORMAT_LABELS,
@@ -157,7 +157,8 @@ export function AiConfigDialog({
   const modelPickerMenuRef = useRef<HTMLUListElement>(null);
   const fetchedForRef = useRef<string | null>(null);
 
-  const canUseKey = Boolean(apiKey.trim()) || hasKey;
+  const localEndpoint = isLocalOpenAiEndpoint({ apiFormat, baseUrl });
+  const canUseKey = Boolean(apiKey.trim()) || hasKey || localEndpoint;
   const language = languages[0] ?? "zh-CN";
   const modelsFetchKey = `${apiFormat}|${baseUrl.trim()}|${apiKey.trim() ? "typed" : hasKey ? "stored" : "none"}`;
 
@@ -427,7 +428,7 @@ export function AiConfigDialog({
                   setTestInline(null);
                 }}
                 placeholder={
-                  hasKey ? t("aiConfig.apiKeyConfigured") : "sk-…"
+                  localEndpoint ? t("aiConfig.localApiKeyOptional") : hasKey ? t("aiConfig.apiKeyConfigured") : "sk-…"
                 }
                 type={showApiKey ? "text" : "password"}
                 value={apiKey}
@@ -627,11 +628,11 @@ export function AiConfigDialog({
                 </label>
                 <AiConfigNumberInput
                   id="ai-config-concurrency-limit"
-                  normalize={normalizeAiAnalysisConcurrency}
+                  normalize={(raw) => normalizeEndpointAiConcurrency({ apiFormat, baseUrl }, raw)}
                   onCommit={onConcurrencyLimitChange}
                   value={concurrencyLimit}
                 />
-                <p className="ai-config-hint">{t("aiConfig.concurrencyLimitHint")}</p>
+                <p className="ai-config-hint">{t(localEndpoint ? "aiConfig.localConcurrencyHint" : "aiConfig.concurrencyLimitHint")}</p>
               </div>
               <div className="editor-field ai-config-field">
                 <label className="micro-label" htmlFor="ai-config-max-image-edge">
@@ -718,6 +719,19 @@ export function AiConfigDialog({
                   />
                 </div>
               </div>
+              {(apiFormat === "openai_chat" || apiFormat === "openai_responses") ? (
+                <div className="editor-field ai-config-field">
+                  <label className="micro-label" htmlFor="ai-config-reasoning-mode">{t("aiConfig.reasoningMode")}</label>
+                  <select className="text-field ai-config-input" id="ai-config-reasoning-mode"
+                    value={analysisSettings.reasoningMode ?? "auto"}
+                    onChange={(event) => commitNumericSettings({ reasoningMode: event.target.value as AiReasoningMode })}>
+                    <option value="auto">{t("aiConfig.reasoningAuto")}</option>
+                    <option value="service_default">{t("aiConfig.reasoningDefault")}</option>
+                    <option value="off">{t("aiConfig.reasoningOff")}</option>
+                  </select>
+                  <p className="ai-config-hint">{t("aiConfig.reasoningHint")}</p>
+                </div>
+              ) : null}
               <div className="editor-field ai-config-field">
                 <label className="micro-label" htmlFor="ai-config-output-style">
                   {t("aiConfig.outputStyle")}

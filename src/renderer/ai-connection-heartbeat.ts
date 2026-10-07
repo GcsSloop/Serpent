@@ -28,12 +28,13 @@ export function aiAnalyzeShowsDisconnectGlyph(
   );
 }
 
-/** Analyze is runnable only when a stored key exists and the last probe succeeded. */
+/** A transient heartbeat failure must not block an explicit analysis attempt. */
 export function aiAnalyzeConnectionReady(
   hasKey: boolean,
   connectionState: AiHeartbeatConnectionState,
 ): boolean {
-  return hasKey && connectionState === "connected";
+  void connectionState; // Retain the public signature; status is informational.
+  return hasKey;
 }
 
 /**
@@ -42,4 +43,27 @@ export function aiAnalyzeConnectionReady(
  */
 export function shouldRunAiConnectionHeartbeat(hasKey: boolean): boolean {
   return hasKey;
+}
+
+/** One state owner: manual tests supersede heartbeats; stale replies are ignored. */
+export class AiConnectionProbeGate {
+  private generation = 0;
+  private pending = false;
+
+  begin(background = false): number | undefined {
+    if (background && this.pending) return undefined;
+    this.pending = true;
+    return ++this.generation;
+  }
+
+  isCurrent(ticket: number): boolean { return ticket === this.generation; }
+
+  finish(ticket: number): void {
+    if (this.isCurrent(ticket)) this.pending = false;
+  }
+
+  invalidate(): void {
+    this.generation += 1;
+    this.pending = false;
+  }
 }

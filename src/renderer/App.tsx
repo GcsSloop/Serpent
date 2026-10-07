@@ -1,3 +1,4 @@
+import { isLocalOpenAiEndpoint, normalizeEndpointAiConcurrency } from '../shared/local-ai';
 import {
   useCallback,
   useEffect,
@@ -416,6 +417,7 @@ import { usePanelResize } from "./use-panel-resize";
 import { useToastNotifications } from "./useToastNotifications";
 import {
   AI_CONNECTION_HEARTBEAT_MS,
+  AiConnectionProbeGate,
   aiAnalyzeConnectionReady,
   aiAnalyzeShowsDisconnectGlyph,
   shouldRunAiConnectionHeartbeat,
@@ -2056,6 +2058,7 @@ function AppInner() {
   const [aiSaveVerifying, setAiSaveVerifying] = useState(false);
   const aiAutoConnectAttemptedRef = useRef(false);
   /** Fingerprint of credentials last proven by a successful probe. */
+  const aiProbeGateRef = useRef(new AiConnectionProbeGate());
   const aiVerifiedFingerprintRef = useRef<string | null>(null);
   const aiConfigPersistDraftRef = useRef({
     apiFormat: DEFAULT_AI_API_FORMAT as AiApiFormat,
@@ -11657,6 +11660,12 @@ function AppInner() {
     aiVerifiedFingerprintRef.current = null;
   }
 
+  useEffect(() => {
+    const gate = aiProbeGateRef.current;
+    gate.invalidate();
+    return () => gate.invalidate();
+  }, [aiApiFormat, aiModel, aiBaseUrl, aiApiKey]);
+
   function aiCredentialFingerprint(): string {
     return [
       aiApiFormat,
@@ -11671,57 +11680,69 @@ function AppInner() {
     reason?: string;
   }> => {
     if (!api) return { success: false, reason: t("aiConfig.testFailed") };
-    if (!aiApiKey.trim() && !aiHasKey) {
+    if (!aiApiKey.trim() && !aiHasKey && !isLocalOpenAiEndpoint({ apiFormat: aiApiFormat, baseUrl: aiBaseUrl })) {
       setAiConnectionState("disconnected");
       setAiConnectionReason(t("aiConfig.testFailed"));
       aiVerifiedFingerprintRef.current = null;
       return { success: false, reason: t("aiConfig.testFailed") };
     }
-    setAiConnectionState("connecting");
-    setAiConnectionReason(undefined);
-    const fingerprint = [
-      aiApiFormat,
-      aiModel.trim(),
-      aiBaseUrl.trim(),
-      aiApiKey.trim() || (aiHasKey ? "__stored__" : ""),
-    ].join("\u0001");
-    const result = await api.testAiConnection({
-      apiFormat: aiApiFormat,
-      model: aiModel.trim(),
-      ...(aiApiKey.trim() ? { apiKey: aiApiKey.trim() } : {}),
-      baseUrl: aiBaseUrl.trim() || undefined,
-    });
-    if (!result.ok) {
-      const reason = toMessage(
-        result.error,
-        t("aiConfig.testFailed"),
-        locale,
-      );
+    const gate = aiProbeGateRef.current;
+    const ticket = gate.begin()!;
+    try {
+      setAiConnectionState("connecting");
+      setAiConnectionReason(undefined);
+      const fingerprint = [
+        aiApiFormat,
+        aiModel.trim(),
+        aiBaseUrl.trim(),
+        aiApiKey.trim() || (aiHasKey ? "__stored__" : ""),
+      ].join("\u0001");
+      const result = await api.testAiConnection({
+        apiFormat: aiApiFormat,
+        model: aiModel.trim(),
+        ...(aiApiKey.trim() ? { apiKey: aiApiKey.trim() } : {}),
+        baseUrl: aiBaseUrl.trim() || undefined,
+      });
+      if (!gate.isCurrent(ticket)) return { success: false, reason: t("aiConfig.testFailed") };
+      if (!result.ok) {
+        const reason = toMessage(
+          result.error,
+          t("aiConfig.testFailed"),
+          locale,
+        );
+        setAiConnectionState("error");
+        setAiConnectionReason(reason);
+        aiVerifiedFingerprintRef.current = null;
+        return { success: false, reason };
+      }
+      if (result.value.success) {
+        setAiConnectionState("connected");
+        setAiConnectionReason(undefined);
+        aiVerifiedFingerprintRef.current = fingerprint;
+        // Typed key is not on disk until save — only mark ready when stored.
+        if (aiHasKey || !aiApiKey.trim()) {
+          setAiHasKey(true);
+        } else {
+          // Probe OK with unsaved key: refresh from disk (still false until save).
+          void api.getAiConfig().then((cfg) => {
+            if (cfg.ok) setAiHasKey(cfg.value.hasKey);
+          });
+        }
+        return { success: true };
+      }
+      const reason = result.value.reason ?? t("aiConfig.testFailed");
       setAiConnectionState("error");
       setAiConnectionReason(reason);
       aiVerifiedFingerprintRef.current = null;
       return { success: false, reason };
-    }
-    if (result.value.success) {
-      setAiConnectionState("connected");
-      setAiConnectionReason(undefined);
-      aiVerifiedFingerprintRef.current = fingerprint;
-      // Typed key is not on disk until save — only mark ready when stored.
-      if (aiHasKey || !aiApiKey.trim()) {
-        setAiHasKey(true);
-      } else {
-        // Probe OK with unsaved key: refresh from disk (still false until save).
-        void api.getAiConfig().then((cfg) => {
-          if (cfg.ok) setAiHasKey(cfg.value.hasKey);
-        });
+    } catch {
+      if (gate.isCurrent(ticket)) {
+        setAiConnectionState("error");
+        setAiConnectionReason(t("aiConfig.testFailed"));
+        aiVerifiedFingerprintRef.current = null;
       }
-      return { success: true };
-    }
-    const reason = result.value.reason ?? t("aiConfig.testFailed");
-    setAiConnectionState("error");
-    setAiConnectionReason(reason);
-    aiVerifiedFingerprintRef.current = null;
-    return { success: false, reason };
+      return { success: false, reason: t("aiConfig.testFailed") };
+    } finally { gate.finish(ticket); }
   }, [
     aiApiFormat,
     aiApiKey,
@@ -11754,7 +11775,7 @@ function AppInner() {
     } = options;
     if (!api) return false;
     const draft = aiConfigPersistDraftRef.current;
-    if (!draft.apiKey.trim() && !draft.hasKey) {
+    if (!draft.apiKey.trim() && !draft.hasKey && !isLocalOpenAiEndpoint(draft)) {
       if (showNotice) {
         setError(t("toast.aiConfigSaveFailed"));
       }
@@ -11762,7 +11783,7 @@ function AppInner() {
     }
     const result = await api.setAiConfig({
       apiFormat: draft.apiFormat,
-      model: draft.model,
+      model: draft.model.trim(),
       baseUrl: draft.baseUrl.trim(),
       ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}),
       enabledFields: {
@@ -11811,9 +11832,10 @@ function AppInner() {
   }
 
   function commitAiConcurrencyLimit(value: number) {
-    setAiConcurrencyLimit(value);
-    aiConfigPersistDraftRef.current.concurrencyLimit = value;
-    void persistAiConfig({ concurrencyLimit: value });
+    const normalized = normalizeEndpointAiConcurrency({ apiFormat: aiApiFormat, baseUrl: aiBaseUrl }, value);
+    setAiConcurrencyLimit(normalized);
+    aiConfigPersistDraftRef.current.concurrencyLimit = normalized;
+    void persistAiConfig({ concurrencyLimit: normalized });
   }
 
   function commitAiAnalysisSettingsPatch(
@@ -11826,7 +11848,7 @@ function AppInner() {
   }
 
   async function saveAiConfig() {
-    if (!api || (!aiApiKey.trim() && !aiHasKey)) return;
+    if (!api || (!aiApiKey.trim() && !aiHasKey && !isLocalOpenAiEndpoint({ apiFormat: aiApiFormat, baseUrl: aiBaseUrl }))) return;
     const alreadyVerified =
       aiVerifiedFingerprintRef.current === aiCredentialFingerprint() &&
       aiConnectionState === "connected";
@@ -11878,51 +11900,65 @@ function AppInner() {
   }, [librarySettingsOpen, api, library]);
 
   const probeStoredAiConnection = useCallback(async () => {
-    if (!api) return;
-    if (!shouldRunAiConnectionHeartbeat(aiHasKey)) {
-      setAiConnectionState("disconnected");
-      setAiConnectionReason(undefined);
-      aiVerifiedFingerprintRef.current = null;
-      return;
-    }
-    setAiConnectionState((prev) =>
-      prev === "connected" || prev === "connecting" ? prev : "connecting",
-    );
-    const cfg = await api.getAiConfig();
-    if (!cfg.ok || !cfg.value.hasKey || !cfg.value.apiFormat || !cfg.value.model) {
-      setAiConnectionState("disconnected");
-      setAiConnectionReason(t("aiConfig.testFailed"));
-      aiVerifiedFingerprintRef.current = null;
-      return;
-    }
-    const result = await api.testAiConnection({
-      apiFormat: cfg.value.apiFormat,
-      model: cfg.value.model,
-      baseUrl: cfg.value.baseUrl.trim() || undefined,
-    });
-    if (!result.ok) {
-      setAiConnectionState("error");
-      setAiConnectionReason(
-        toMessage(result.error, t("aiConfig.testFailed"), locale),
+    if (!api || (appSettingsOpen && appSettingsCategory === "ai")) return;
+    const gate = aiProbeGateRef.current;
+    const ticket = gate.begin(true);
+    if (ticket === undefined) return;
+    try {
+      if (!shouldRunAiConnectionHeartbeat(aiHasKey)) {
+        setAiConnectionState("disconnected");
+        setAiConnectionReason(undefined);
+        aiVerifiedFingerprintRef.current = null;
+        return;
+      }
+      setAiConnectionState((prev) =>
+        prev === "connected" || prev === "connecting" ? prev : "connecting",
       );
+      const cfg = await api.getAiConfig();
+      if (!gate.isCurrent(ticket)) return;
+      if (!cfg.ok || !cfg.value.hasKey || !cfg.value.apiFormat || !cfg.value.model) {
+        setAiConnectionState("disconnected");
+        setAiConnectionReason(t("aiConfig.testFailed"));
+        aiVerifiedFingerprintRef.current = null;
+        return;
+      }
+      const result = await api.testAiConnection({
+        probeMode: "reachability",
+        apiFormat: cfg.value.apiFormat,
+        model: cfg.value.model,
+        baseUrl: cfg.value.baseUrl.trim() || undefined,
+      });
+      if (!gate.isCurrent(ticket)) return;
+      if (!result.ok) {
+        setAiConnectionState("error");
+        setAiConnectionReason(
+          toMessage(result.error, t("aiConfig.testFailed"), locale),
+        );
+        aiVerifiedFingerprintRef.current = null;
+        return;
+      }
+      if (result.value.success) {
+        setAiConnectionState("connected");
+        setAiConnectionReason(undefined);
+        aiVerifiedFingerprintRef.current = [
+          cfg.value.apiFormat,
+          cfg.value.model.trim(),
+          cfg.value.baseUrl.trim(),
+          "__stored__",
+        ].join("\u0001");
+        return;
+      }
+      setAiConnectionState("error");
+      setAiConnectionReason(result.value.reason ?? t("aiConfig.testFailed"));
       aiVerifiedFingerprintRef.current = null;
-      return;
-    }
-    if (result.value.success) {
-      setAiConnectionState("connected");
-      setAiConnectionReason(undefined);
-      aiVerifiedFingerprintRef.current = [
-        cfg.value.apiFormat,
-        cfg.value.model.trim(),
-        cfg.value.baseUrl.trim(),
-        "__stored__",
-      ].join("\u0001");
-      return;
-    }
-    setAiConnectionState("error");
-    setAiConnectionReason(result.value.reason ?? t("aiConfig.testFailed"));
-    aiVerifiedFingerprintRef.current = null;
-  }, [api, aiHasKey, locale, t]);
+    } catch {
+      if (gate.isCurrent(ticket)) {
+        setAiConnectionState("error");
+        setAiConnectionReason(t("aiConfig.testFailed"));
+        aiVerifiedFingerprintRef.current = null;
+      }
+    } finally { gate.finish(ticket); }
+  }, [api, aiHasKey, locale, t, appSettingsOpen, appSettingsCategory]);
 
   useEffect(() => {
     if (!shouldRunAiConnectionHeartbeat(aiHasKey)) {

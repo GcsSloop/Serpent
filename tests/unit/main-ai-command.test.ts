@@ -13,24 +13,11 @@ test("ai.config.get stays on the Main-owned config path", () => {
   )).toBeUndefined();
 });
 
-test("ai.test-connection prefers the request api key", () => {
+test("ai.test-connection stays independent of Worker commands", () => {
   expect(executeAiMainCommand(
-    {
-      type: "ai.test-connection.request",
-      apiFormat: "openai_chat",
-      model: "gpt-4o",
-      apiKey: "sk-test",
-    },
-    {
-      loadAiConfig: () => { throw new Error("unused"); },
-      getDecryptedApiKey: () => { throw new Error("stored key"); },
-    },
-  )).toEqual({
-    type: "ai.test-connection",
-    apiFormat: "openai_chat",
-    model: "gpt-4o",
-    apiKey: "sk-test",
-  });
+    { type: "ai.test-connection.request", apiFormat: "openai_chat", model: "gpt-4o", apiKey: "sk-test" },
+    { loadAiConfig: () => { throw new Error("unused"); }, getDecryptedApiKey: () => { throw new Error("unused"); } },
+  )).toBeUndefined();
 });
 
 test("asset.analyze maps stored config onto the worker command", () => {

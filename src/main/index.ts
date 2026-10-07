@@ -1,3 +1,5 @@
+import { resolveAiRequestKey } from './ai-credentials';
+import { isLocalOpenAiEndpoint, normalizeEndpointAiConcurrency } from '../shared/local-ai';
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -368,7 +370,6 @@ import {
 import {
   AI_ANALYSIS_QUEUE_BATCH_SIZE,
   DEFAULT_AI_ANALYSIS_CONCURRENCY,
-  normalizeAiAnalysisConcurrency,
 } from "../shared/ai-concurrency";
 import {
   DEFAULT_AI_ANALYSIS_IMAGE_EDGE_PX,
@@ -1194,7 +1195,7 @@ function loadAiConfig(): AiConfig & { hasKey: boolean } {
     const merged: AiConfig = {
       ...DEFAULT_AI_CONFIG,
       model: typeof parsed.model === "string" && parsed.model.trim()
-        ? parsed.model
+        ? parsed.model.trim()
         : DEFAULT_AI_CONFIG.model,
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
       descriptionEnabled:
@@ -1212,7 +1213,7 @@ function loadAiConfig(): AiConfig & { hasKey: boolean } {
             .analysisSettings?.forceExistingTags ??
           DEFAULT_AI_ANALYSIS_SETTINGS.forceExistingTags,
       }),
-      concurrencyLimit: normalizeAiAnalysisConcurrency(parsed.concurrencyLimit),
+      concurrencyLimit: normalizeEndpointAiConcurrency({ apiFormat, baseUrl: parsed.baseUrl }, parsed.concurrencyLimit),
       maxAnalysisImageEdgePx: normalizeAiAnalysisImageEdgePx(
         (parsed as { maxAnalysisImageEdgePx?: unknown }).maxAnalysisImageEdgePx,
       ),
@@ -1226,7 +1227,7 @@ function loadAiConfig(): AiConfig & { hasKey: boolean } {
       apiFormat,
       languages,
     };
-    const hasKey = existsSync(aiKeyPath());
+    const hasKey = isLocalOpenAiEndpoint(merged) || existsSync(aiKeyPath());
     return { ...merged, hasKey };
   } catch {
     const hasKey = existsSync(aiKeyPath());
@@ -2159,7 +2160,7 @@ async function processAiQueueBatch(
   const config = loadAiConfig();
   if (!config.hasKey || !workerClient) return { processed: 0, requeued: 0 };
   try {
-    const apiKey = getDecryptedApiKey();
+    const apiKey = await resolveAiRequestKey(config, undefined, getDecryptedApiKey);
     // Keep each Worker admission bounded. A 32-job batch with 16 external
     // waits used to be one long scheduler request; slice it into short
     // continuations so claim/commit ownership is reacquired between waves.

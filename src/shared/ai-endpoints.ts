@@ -438,7 +438,7 @@ export async function listAiModels(input: {
         {
           method: 'GET',
           headers: {
-            Authorization: `Bearer ${input.apiKey}`,
+            ...(input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : {}),
             'Content-Type': 'application/json',
           },
           signal: input.signal,

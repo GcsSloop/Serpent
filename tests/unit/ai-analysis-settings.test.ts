@@ -71,6 +71,7 @@ describe('toWireAiAnalysisSettings', () => {
       maxDescriptionCharsZh: 100,
       maxDescriptionWordsEn: 60,
       outputStyle: 'normal',
+      reasoningMode: 'auto',
       ratingRubric: DEFAULT_AI_ANALYSIS_SETTINGS.ratingRubric,
       customDescriptionPrompt: DEFAULT_AI_ANALYSIS_SETTINGS.customDescriptionPrompt,
       customTagPrompt: DEFAULT_AI_ANALYSIS_SETTINGS.customTagPrompt,

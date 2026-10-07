@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AI_CONNECTION_HEARTBEAT_MS,
+  AiConnectionProbeGate,
   aiAnalyzeConnectionReady,
   aiAnalyzeShowsDisconnectGlyph,
   shouldRunAiConnectionHeartbeat,
@@ -26,10 +27,24 @@ describe("ai-connection-heartbeat (Serpent-rsbt)", () => {
     expect(aiAnalyzeShowsDisconnectGlyph(true, "connected")).toBe(false);
   });
 
-  it("requires connected state for analyze readiness", () => {
+  it("allows a configured analysis attempt during transient probe failures", () => {
     expect(aiAnalyzeConnectionReady(true, "connected")).toBe(true);
-    expect(aiAnalyzeConnectionReady(true, "connecting")).toBe(false);
-    expect(aiAnalyzeConnectionReady(true, "disconnected")).toBe(false);
+    expect(aiAnalyzeConnectionReady(true, "connecting")).toBe(true);
+    expect(aiAnalyzeConnectionReady(true, "disconnected")).toBe(true);
     expect(aiAnalyzeConnectionReady(false, "connected")).toBe(false);
   });
+});
+
+it("manual probes supersede heartbeats and stale results cannot release a newer probe", () => {
+  const gate = new AiConnectionProbeGate();
+  const first = gate.begin(true)!;
+  expect(gate.begin(true)).toBeUndefined();
+  const manual = gate.begin()!;
+  expect(gate.isCurrent(first)).toBe(false);
+  gate.finish(first);
+  expect(gate.begin(true)).toBeUndefined();
+  gate.finish(manual);
+  expect(gate.begin(true)).toBeTypeOf("number");
+  gate.invalidate();
+  expect(gate.isCurrent(manual)).toBe(false);
 });

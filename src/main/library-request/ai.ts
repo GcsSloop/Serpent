@@ -1,3 +1,9 @@
+import { resolveAiRequestKey } from '../ai-credentials';
+import { isLocalOpenAiEndpoint, normalizeEndpointAiConcurrency, resolveAiApiKey } from '../../shared/local-ai';
+import { AiConnectionProbe, type AiConnectionProbeInput, type AiConnectionProbeResult } from '../ai-connection-probe';
+
+const connectionProbe = new AiConnectionProbe();
+
 import type { RendererRequest, WorkerCommand } from "../../shared/protocol/requests";
 import type { RendererResult, WorkerResult } from "../../shared/protocol/responses";
 import { createPublicError } from "../../shared/protocol/errors";
@@ -7,7 +13,6 @@ import {
   toWireAiAnalysisSettings,
   type AiAnalysisSettings,
 } from "../../shared/ai-analysis-settings";
-import { normalizeAiAnalysisConcurrency } from "../../shared/ai-concurrency";
 import { normalizeAiAnalysisImageEdgePx } from "../../shared/ai-analysis-image";
 import { normalizeAiReliabilitySettings, type AiReliabilitySettings } from "../../shared/ai-reliability";
 import {
@@ -40,6 +45,7 @@ export type AiOwnedSavedConfig = Omit<AiOwnedConfig, "hasKey">;
 export type AiOwnedRequestRuntime = {
   loadAiConfig: () => AiOwnedConfig;
   getDecryptedApiKey: () => string;
+  probeAiConnection?: (input: AiConnectionProbeInput) => Promise<AiConnectionProbeResult>;
   saveAiConfig: (config: AiOwnedSavedConfig) => void;
   saveEncryptedApiKey: (apiKey: string) => void;
   workerAvailable: () => boolean;
@@ -61,14 +67,14 @@ export async function tryHandleAiOwnedRequest(
   switch (request.type) {
     case "assets.analyze.request": {
       const config = runtime.loadAiConfig();
-      if (!config.hasKey || !config.apiFormat) {
+      if ((!config.hasKey && !isLocalOpenAiEndpoint(config)) || !config.apiFormat) {
         return {
           ok: false,
           error: createPublicError("AI_ANALYSIS_FAILED", "AI_NOT_CONFIGURED"),
         } satisfies RendererResult;
       }
       try {
-        runtime.getDecryptedApiKey();
+        await resolveAiRequestKey(config, undefined, runtime.getDecryptedApiKey);
       } catch {
         return {
           ok: false,
@@ -112,14 +118,14 @@ export async function tryHandleAiOwnedRequest(
     }
     case "asset.analyze.request": {
       const config = runtime.loadAiConfig();
-      if (!config.hasKey || !config.apiFormat) {
+      if ((!config.hasKey && !isLocalOpenAiEndpoint(config)) || !config.apiFormat) {
         return {
           ok: false,
           error: createPublicError("AI_ANALYSIS_FAILED", "AI_NOT_CONFIGURED"),
         } satisfies RendererResult;
       }
       try {
-        runtime.getDecryptedApiKey();
+        await resolveAiRequestKey(config, undefined, runtime.getDecryptedApiKey);
       } catch {
         return {
           ok: false,
@@ -214,7 +220,9 @@ export async function tryHandleAiOwnedRequest(
           error: createPublicError("CONFIRMATION_REQUIRED"),
         } satisfies RendererResult;
       }
-      if (!request.apiKey && !currentConfig.hasKey) {
+      try {
+        resolveAiApiKey(request, request.apiKey, runtime.getDecryptedApiKey);
+      } catch {
         return {
           ok: false,
           error: createPublicError("AI_SETTINGS_INCOMPLETE"),
@@ -222,7 +230,7 @@ export async function tryHandleAiOwnedRequest(
       }
       const savedConfig: AiOwnedSavedConfig = {
         apiFormat: request.apiFormat,
-        model: request.model,
+        model: request.model.trim(),
         baseUrl: (request.baseUrl ?? "").trim(),
         descriptionEnabled: request.enabledFields?.description ?? true,
         tagEnabled: request.enabledFields?.tags ?? true,
@@ -234,8 +242,8 @@ export async function tryHandleAiOwnedRequest(
           tagEnabled: request.enabledFields?.tags ?? true,
           ratingEnabled: request.enabledFields?.rating ?? true,
         }),
-        concurrencyLimit: normalizeAiAnalysisConcurrency(
-          request.concurrencyLimit ?? currentConfig.concurrencyLimit,
+        concurrencyLimit: normalizeEndpointAiConcurrency(
+          request, request.concurrencyLimit ?? currentConfig.concurrencyLimit,
         ),
         maxAnalysisImageEdgePx: normalizeAiAnalysisImageEdgePx(
           request.maxAnalysisImageEdgePx ?? currentConfig.maxAnalysisImageEdgePx,
@@ -251,7 +259,7 @@ export async function tryHandleAiOwnedRequest(
         disclaimerAccepted: request.disclaimerAccepted,
       };
       runtime.saveAiConfig(savedConfig);
-      if (request.apiKey) runtime.saveEncryptedApiKey(request.apiKey);
+      if (request.apiKey?.trim()) runtime.saveEncryptedApiKey(request.apiKey.trim());
       if (runtime.workerAvailable()) {
         try {
           const update = await runtime.requestWorker({
@@ -276,70 +284,38 @@ export async function tryHandleAiOwnedRequest(
       return { ok: true, type: "ai.config.saved" } satisfies RendererResult;
     }
     case "ai.test-connection.request": {
-      // Resolve credentials here so a missing key returns AI_NOT_CONFIGURED
-      // instead of the generic CANCELLED path from commandFor().
-      let apiKey = request.apiKey?.trim() ?? "";
-      if (!apiKey) {
-        try {
-          apiKey = runtime.getDecryptedApiKey();
-        } catch {
-          return {
-            ok: false,
-            error: createPublicError("AI_ANALYSIS_FAILED", "AI_NOT_CONFIGURED"),
-          } satisfies RendererResult;
-        }
+      let apiKey: string;
+      try {
+        apiKey = await resolveAiRequestKey(request, request.apiKey, runtime.getDecryptedApiKey);
+      } catch {
+        return { ok: false, error: createPublicError("AI_ANALYSIS_FAILED", "AI_NOT_CONFIGURED") };
       }
-      if (!runtime.workerAvailable()) throw new Error("Library Worker is unavailable.");
-      const workerResult = await runtime.requestWorker({
-        type: "ai.test-connection",
+      const result = await (runtime.probeAiConnection ?? ((input) => connectionProbe.run(input)))({
         apiFormat: request.apiFormat,
-        model: request.model,
+        model: request.model.trim(),
         apiKey,
-        ...(request.baseUrl?.trim()
-          ? { baseUrl: request.baseUrl.trim() }
-          : {}),
+        baseUrl: request.baseUrl?.trim() || undefined,
+        probeMode: request.probeMode,
       });
-      if (!workerResult.ok) {
-        return {
-          ok: false,
-          error: workerResult.error,
-        } satisfies RendererResult;
+      if (!result.success) {
+        runtime.logInfo("ai.connection.test", "AI connection probe failed.", {
+          apiFormat: request.apiFormat, errorKind: result.errorKind,
+        });
       }
-      if (workerResult.type !== "ai.test-connection.result") {
-        return {
-          ok: false,
-          error: createPublicError("AI_ANALYSIS_FAILED"),
-        } satisfies RendererResult;
-      }
-      return {
-        ok: true,
-        type: "ai.test-connection.result",
-        success: workerResult.success,
-        ...(workerResult.errorKind
-          ? { errorKind: workerResult.errorKind }
-          : {}),
-        ...(workerResult.reason ? { reason: workerResult.reason } : {}),
-      } satisfies RendererResult;
+      return { ok: true, type: "ai.test-connection.result", ...result };
     }
     case "ai.list-models.request": {
-      let apiKey = request.apiKey?.trim() ?? "";
-      if (!apiKey) {
-        try {
-          apiKey = runtime.getDecryptedApiKey();
-        } catch {
-          return {
-            ok: true,
-            type: "ai.list-models.result",
-            models: [],
-            errorKind: "auth",
-            reason: "API key is required to list models.",
-          } satisfies RendererResult;
-        }
+      let apiKey: string;
+      try {
+        apiKey = await resolveAiRequestKey(request, request.apiKey, runtime.getDecryptedApiKey);
+      } catch {
+        return { ok: true, type: "ai.list-models.result", models: [], errorKind: "auth", reason: "API key is required to list models." };
       }
       const listed = await listAiModels({
         apiFormat: request.apiFormat,
         apiKey,
         baseUrl: request.baseUrl,
+        signal: AbortSignal.timeout(10_000),
       });
       if (!listed.ok) {
         return {
@@ -358,7 +334,7 @@ export async function tryHandleAiOwnedRequest(
     }
     case "ai.search-plan.request": {
       const config = runtime.loadAiConfig();
-      if (!config.hasKey || !config.disclaimerAccepted) {
+      if ((!config.hasKey && !isLocalOpenAiEndpoint(config)) || !config.disclaimerAccepted) {
         runtime.logInfo(
           "ai.search-plan.unavailable",
           "AI search requires configured credentials and accepted disclosure.",
@@ -375,7 +351,7 @@ export async function tryHandleAiOwnedRequest(
       }
       let apiKey: string;
       try {
-        apiKey = runtime.getDecryptedApiKey();
+        apiKey = await resolveAiRequestKey(config, undefined, runtime.getDecryptedApiKey);
       } catch (caught) {
         runtime.logError("ai.search-plan.credentials", caught, {
           apiFormat: config.apiFormat,

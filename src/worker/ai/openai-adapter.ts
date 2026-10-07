@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { openAiInferenceOptions } from '../../shared/local-ai';
 
 import { buildAiAnalysisSystemPrompt } from '../../shared/ai-analysis-settings';
 import {
@@ -198,7 +199,7 @@ export class OpenAIVendorAdapter implements VendorAdapter {
     wireFormat: OpenAiWireFormat = 'openai_chat',
   ) {
     this.apiKey = apiKey;
-    this.model = model;
+    this.model = model.trim();
     this.baseUrl = baseUrl;
     this.wireFormat = wireFormat;
     this._fetch = customFetch ?? globalThis.fetch.bind(globalThis);
@@ -218,27 +219,28 @@ export class OpenAIVendorAdapter implements VendorAdapter {
     let response: Response;
     try {
       if (this.wireFormat === 'openai_responses') {
-        response = await this._fetch(resolveOpenAiResponsesUrl(this.baseUrl), {
+        response = await this.#fetchWithReasoningFallback(resolveOpenAiResponsesUrl(this.baseUrl), {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${this.apiKey}`,
+            ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
             model: this.model,
             input: 'Reply with the single word OK.',
-            max_output_tokens: 16,
+            ...openAiInferenceOptions({ apiFormat: 'openai_responses', baseUrl: this.baseUrl }),
+            max_output_tokens: 64,
             temperature: 0,
           }),
           signal,
         });
       } else {
-        response = await this._fetch(
+        response = await this.#fetchWithReasoningFallback(
           resolveOpenAiChatCompletionsUrl(this.baseUrl),
           {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${this.apiKey}`,
+              ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
@@ -246,7 +248,8 @@ export class OpenAIVendorAdapter implements VendorAdapter {
               messages: [
                 { role: 'user', content: 'Reply with the single word OK.' },
               ],
-              max_tokens: 16,
+              ...openAiInferenceOptions({ apiFormat: 'openai_chat', baseUrl: this.baseUrl }),
+              max_tokens: 64,
               temperature: 0,
             }),
             signal,
@@ -260,7 +263,13 @@ export class OpenAIVendorAdapter implements VendorAdapter {
       throw await mapOpenAiHttpError(response);
     }
     try {
-      await response.json();
+      const json: unknown = await response.json();
+      const normalized = this.wireFormat === 'openai_responses'
+        ? normalizeOpenAiResponsesResponse(json, this.model)
+        : normalizeOpenAiChatResponse(json, this.model);
+      if (normalized.kind !== 'text' || !normalized.text.trim()) {
+        throw new Error('The model returned no final text for the connection probe.');
+      }
     } catch (error: unknown) {
       throw new VendorAdapterError(
         'invalid_response',
@@ -298,6 +307,10 @@ export class OpenAIVendorAdapter implements VendorAdapter {
           model: this.model,
           messages,
           temperature: 0.2,
+          ...openAiInferenceOptions(
+            { apiFormat: this.wireFormat, baseUrl: this.baseUrl },
+            request.analysisSettings?.reasoningMode,
+          ),
         };
         if (mode !== 'text') {
           body.response_format = buildOpenAiStructuredResponseFormat(
@@ -306,10 +319,10 @@ export class OpenAIVendorAdapter implements VendorAdapter {
           );
         }
         try {
-          response = await this._fetch(endpoint, {
+          response = await this.#fetchWithReasoningFallback(endpoint, {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${this.apiKey}`,
+              ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
               'Content-Type': 'application/json',
             },
             body: JSON.stringify(body),
@@ -466,6 +479,10 @@ export class OpenAIVendorAdapter implements VendorAdapter {
             },
           ],
           temperature: 0.2,
+          ...openAiInferenceOptions(
+            { apiFormat: this.wireFormat, baseUrl: this.baseUrl },
+            request.analysisSettings?.reasoningMode,
+          ),
         };
         if (mode !== 'text') {
           requestBody.text = {
@@ -474,10 +491,10 @@ export class OpenAIVendorAdapter implements VendorAdapter {
         }
 
         try {
-          response = await this._fetch(endpoint, {
+          response = await this.#fetchWithReasoningFallback(endpoint, {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${this.apiKey}`,
+              ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
               'Content-Type': 'application/json',
             },
             body: JSON.stringify(requestBody),
@@ -595,6 +612,25 @@ export class OpenAIVendorAdapter implements VendorAdapter {
         negotiatedMode,
       );
     }
+  }
+
+  /** Retry only an explicitly rejected optional reasoning control. */
+  async #fetchWithReasoningFallback(url: string, init: RequestInit): Promise<Response> {
+    const response = await this._fetch(url, init);
+    if (response.status !== 400 && response.status !== 422) return response;
+    const body = typeof init.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+    if (!body.reasoning && !body.reasoning_effort) return response;
+    let errorText: string;
+    try { errorText = await response.clone().text(); } catch { return response; }
+    const mentionsReasoning = /reasoning(?:_effort|\.effort)?/iu.test(errorText);
+    const rejectsOption = /unsupported|not supported|unknown|unrecognized|unexpected|not allowed|extra inputs|invalid.*(?:effort|reasoning)/iu.test(errorText);
+    if (!mentionsReasoning || !rejectsOption) return response;
+    delete body.reasoning;
+    delete body.reasoning_effort;
+    // Restore the provider's own budget if it cannot disable thinking.
+    delete body.max_output_tokens;
+    delete body.max_tokens;
+    return this._fetch(url, { ...init, body: JSON.stringify(body) });
   }
 
   #buildChatMessages(

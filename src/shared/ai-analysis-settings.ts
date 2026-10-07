@@ -1,3 +1,5 @@
+import type { AiReasoningMode } from './local-ai';
+
 /**
  * F8 AI visual-analysis settings + system prompt builder.
  * See docs/internal/development/2026-07-20-f8-ai-analysis-design-decisions.md
@@ -31,6 +33,8 @@ export interface AiAnalysisSettings {
   maxDescriptionCharsZh: number;
   maxDescriptionWordsEn: number;
   outputStyle: AiOutputStyle;
+  /** Auto disables thinking for local OpenAI services; cloud defaults stay intact. */
+  reasoningMode?: AiReasoningMode;
   ratingRubric: string;
   /** Empty in storage = use {@link DEFAULT_AI_DESCRIPTION_STRUCTURE}. */
   customDescriptionPrompt: string;
@@ -67,6 +71,7 @@ export const DEFAULT_AI_ANALYSIS_SETTINGS: AiAnalysisSettings = {
   maxDescriptionCharsZh: 100,
   maxDescriptionWordsEn: 60,
   outputStyle: 'normal',
+  reasoningMode: 'auto',
   ratingRubric: DEFAULT_AI_RATING_RUBRIC,
   customDescriptionPrompt: DEFAULT_AI_DESCRIPTION_STRUCTURE,
   customTagPrompt: DEFAULT_AI_TAG_PROMPT,
@@ -108,6 +113,8 @@ export function normalizeAiAnalysisSettings(
     outputStyle: isAiOutputStyle(partial.outputStyle)
       ? partial.outputStyle
       : base.outputStyle,
+    reasoningMode: partial.reasoningMode === 'off' || partial.reasoningMode === 'service_default'
+      ? partial.reasoningMode : 'auto',
     ratingRubric:
       typeof partial.ratingRubric === 'string' && partial.ratingRubric.trim()
         ? partial.ratingRubric.trim().slice(0, 4_000)
@@ -126,6 +133,8 @@ export type AiAnalysisSettingsWire = {
   maxDescriptionCharsZh: number;
   maxDescriptionWordsEn: number;
   outputStyle: AiOutputStyle;
+  /** Auto disables thinking for local OpenAI services; cloud defaults stay intact. */
+  reasoningMode?: AiReasoningMode;
   ratingRubric: string;
   customDescriptionPrompt: string;
   customTagPrompt: string;
@@ -140,6 +149,7 @@ export function toWireAiAnalysisSettings(
     maxDescriptionCharsZh: settings.maxDescriptionCharsZh,
     maxDescriptionWordsEn: settings.maxDescriptionWordsEn,
     outputStyle: settings.outputStyle,
+    reasoningMode: settings.reasoningMode ?? 'auto',
     ratingRubric: settings.ratingRubric,
     customDescriptionPrompt: settings.customDescriptionPrompt,
     customTagPrompt: settings.customTagPrompt,

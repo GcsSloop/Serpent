@@ -1,3 +1,4 @@
+import { isLocalOpenAiEndpoint, resolveAiApiKey } from '../../shared/local-ai';
 import type { RendererRequest, WorkerCommand } from "../../shared/protocol/requests";
 import { toWireAiAnalysisSettings } from "../../shared/ai-analysis-settings";
 import type { AiAnalysisSettings } from "../../shared/ai-analysis-settings";
@@ -31,28 +32,9 @@ export function executeAiMainCommand(
     case "ai.list-models.request":
       // Handled directly in handleLibraryRequest — should never reach here.
       return undefined;
-    case "ai.test-connection.request": {
-      // Resolve plaintext key in Main (safeStorage lives here). Pass ephemeral
-      // plaintext to Worker on the private channel — same pattern as asset.analyze.
-      // Do not re-encrypt for Worker: UtilityProcess cannot decrypt Main ciphertext.
-      let apiKey = request.apiKey?.trim() ?? "";
-      if (!apiKey) {
-        try {
-          apiKey = runtime.getDecryptedApiKey();
-        } catch {
-          return undefined;
-        }
-      }
-      return {
-        type: "ai.test-connection",
-        apiFormat: request.apiFormat,
-        model: request.model,
-        apiKey,
-        ...(request.baseUrl?.trim()
-          ? { baseUrl: request.baseUrl.trim() }
-          : {}),
-      };
-    }
+    case "ai.test-connection.request":
+      // Network probes are fully Main-owned and never wait for library work.
+      return undefined;
     case "ai.clear-content.request":
       return {
         type: "ai.clear-content",
@@ -99,11 +81,11 @@ export function executeAiMainCommand(
       };
     case "asset.analyze.request": {
       const config = runtime.loadAiConfig();
-      if (!config.hasKey) return undefined; // Will be handled as error downstream.
+      if (!config.hasKey && !isLocalOpenAiEndpoint(config)) return undefined; // Will be handled as error downstream.
       if (!config.apiFormat) return undefined;
       let apiKey: string;
       try {
-        apiKey = runtime.getDecryptedApiKey();
+        apiKey = resolveAiApiKey(config, undefined, runtime.getDecryptedApiKey);
       } catch {
         return undefined;
       }
@@ -112,7 +94,7 @@ export function executeAiMainCommand(
         libraryId: request.libraryId,
         assetId: request.assetId,
         apiFormat: config.apiFormat,
-        model: config.model,
+        model: config.model.trim(),
         apiKey,
         ...(config.baseUrl.trim() ? { baseUrl: config.baseUrl.trim() } : {}),
         enabledFields: {

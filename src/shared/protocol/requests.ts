@@ -1,3 +1,4 @@
+import { isLocalOpenAiEndpoint } from '../local-ai';
 import { z } from 'zod';
 
 import {
@@ -153,6 +154,7 @@ const aiAnalysisSettingsSchema = z.strictObject({
   maxDescriptionCharsZh: z.number().int().min(20).max(500),
   maxDescriptionWordsEn: z.number().int().min(10).max(200),
   outputStyle: z.enum(['normal', 'concise', 'rigorous']),
+  reasoningMode: z.enum(['auto', 'service_default', 'off']).optional(),
   ratingRubric: z.string().min(1).max(4_000),
   customDescriptionPrompt: z.string().max(4_000),
   customTagPrompt: z.string().max(4_000),
@@ -1296,6 +1298,7 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
     type: z.literal('ai.test-connection.request'),
     apiFormat: aiApiFormatSchema,
     model: nonBlankString,
+    probeMode: z.enum(['inference', 'reachability']).optional(),
     /** Omit or blank to use the stored encrypted key. */
     apiKey: z.string().max(512).optional(),
     baseUrl: z.string().max(2048).optional(),
@@ -2348,12 +2351,14 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
     assetId: identifierSchema,
     apiFormat: aiApiFormatSchema,
     model: nonBlankString,
-    apiKey: nonBlankString,
+    apiKey: z.string().max(512),
     baseUrl: z.string().max(2048).optional(),
     enabledFields: aiEnabledFieldsSchema,
     analysisSettings: aiAnalysisSettingsSchema,
     languages: aiLanguagesSchema,
     maxAnalysisImageEdgePx: aiAnalysisImageEdgeSchema.optional(),
+  }).refine((input) => Boolean(input.apiKey.trim()) || isLocalOpenAiEndpoint(input), {
+    message: "AI API key is required for non-local services.", path: ["apiKey"],
   }),
   z.strictObject({
     type: z.literal('ai.content.get'),
@@ -2685,9 +2690,11 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('ai.test-connection'),
     apiFormat: aiApiFormatSchema,
     /** Ephemeral plaintext key on the private Main→Worker channel (same as asset.analyze). */
-    apiKey: nonBlankString,
+    apiKey: z.string().max(512),
     model: nonBlankString,
     baseUrl: z.string().max(2048).optional(),
+  }).refine((input) => Boolean(input.apiKey.trim()) || isLocalOpenAiEndpoint(input), {
+    message: "AI API key is required for non-local services.", path: ["apiKey"],
   }),
   z.strictObject({
     type: z.literal('ai.enqueue-analysis'),
@@ -2710,7 +2717,7 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
     libraryId: identifierSchema,
     apiFormat: aiApiFormatSchema,
     model: nonBlankString,
-    apiKey: nonBlankString,
+    apiKey: z.string().max(512),
     baseUrl: z.string().max(2048).optional(),
     enabledFields: aiEnabledFieldsSchema,
     analysisSettings: aiAnalysisSettingsSchema,
@@ -2720,6 +2727,8 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
     requestTimeoutMs: z.number().int().min(15_000).max(600_000),
     maxAttempts: z.number().int().min(1).max(10),
     maxJobs: z.number().int().min(1).max(100).default(20),
+  }).refine((input) => Boolean(input.apiKey.trim()) || isLocalOpenAiEndpoint(input), {
+    message: "AI API key is required for non-local services.", path: ["apiKey"],
   }),
   z.strictObject({
     /** Applies the persisted global cap to a live Worker without restarting it. */

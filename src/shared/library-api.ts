@@ -622,6 +622,7 @@ export interface SerpentLibraryApi {
       maxDescriptionCharsZh: number;
       maxDescriptionWordsEn: number;
       outputStyle: 'normal' | 'concise' | 'rigorous';
+      reasoningMode?: 'auto' | 'service_default' | 'off';
       ratingRubric: string;
       customDescriptionPrompt: string;
       customTagPrompt: string;
@@ -645,6 +646,7 @@ export interface SerpentLibraryApi {
       maxDescriptionCharsZh: number;
       maxDescriptionWordsEn: number;
       outputStyle: 'normal' | 'concise' | 'rigorous';
+      reasoningMode?: 'auto' | 'service_default' | 'off';
       ratingRubric: string;
       customDescriptionPrompt: string;
       customTagPrompt: string;
@@ -799,6 +801,7 @@ export interface SerpentLibraryApi {
   testAiConnection(input: {
     apiFormat: AiApiFormat;
     model: string;
+    probeMode?: 'inference' | 'reachability';
     apiKey?: string;
     baseUrl?: string;
   }): Promise<LibraryApiResult<{ success: boolean; errorKind?: string; reason?: string }>>;

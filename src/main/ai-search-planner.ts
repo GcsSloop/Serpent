@@ -1,3 +1,4 @@
+import { openAiInferenceOptions } from '../shared/local-ai';
 import {
   formatAiLanguagesForPrompt,
   resolveAnthropicMessagesUrl,
@@ -253,10 +254,11 @@ function providerRequest(
   if (input.apiFormat === 'openai_chat') {
     return [resolveOpenAiChatCompletionsUrl(input.baseUrl), {
       method: 'POST', signal,
-      headers: { Authorization: `Bearer ${input.apiKey}`, 'Content-Type': 'application/json' },
+      headers: { ...(input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : {}), 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: input.model,
         temperature: 0,
+        ...openAiInferenceOptions(input),
         messages: [{ role: 'system', content: system }, { role: 'user', content: input.naturalQuery }],
         response_format: {
           type: 'json_schema',
@@ -268,10 +270,11 @@ function providerRequest(
   if (input.apiFormat === 'openai_responses') {
     return [resolveOpenAiResponsesUrl(input.baseUrl), {
       method: 'POST', signal,
-      headers: { Authorization: `Bearer ${input.apiKey}`, 'Content-Type': 'application/json' },
+      headers: { ...(input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : {}), 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: input.model,
         temperature: 0,
+        ...openAiInferenceOptions(input),
         instructions: system,
         input: [{ role: 'user', content: [{ type: 'input_text', text: input.naturalQuery }] }],
         text: {

@@ -2460,6 +2460,7 @@ const rendererSuccessResultSchema = z.discriminatedUnion('type', [
       maxDescriptionCharsZh: z.number().int().min(20).max(500),
       maxDescriptionWordsEn: z.number().int().min(10).max(200),
       outputStyle: z.enum(['normal', 'concise', 'rigorous']),
+      reasoningMode: z.enum(['auto', 'service_default', 'off']).optional(),
       ratingRubric: z.string().min(1).max(4_000),
       customDescriptionPrompt: z.string().max(4_000),
       customTagPrompt: z.string().max(4_000),
