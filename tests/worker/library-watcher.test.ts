@@ -533,6 +533,8 @@ describe('linked folder watcher', () => {
       folderId: linked.folderId,
       recursive: true,
     })[0]!;
+    // Finish the initial asynchronous content-identity backfill first.
+    await scheduler.flush();
     const enumerateSources = vi.spyOn(
       service as unknown as {
         enumerateSourcesAsync(input: { rootPath: string }): Promise<unknown>;

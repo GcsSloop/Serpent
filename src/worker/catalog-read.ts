@@ -435,7 +435,7 @@ export function buildCatalogAssetVisibilityPredicates(input: {
   hasSequenceFrames: boolean;
 }): string[] {
   const predicates = [input.scopeKind === 'trash'
-    ? 'a.deleted_at IS NOT NULL'
+    ? "a.deleted_at IS NOT NULL AND a.location_kind = 'managed'"
     : 'a.deleted_at IS NULL'];
   if (input.scopeKind === 'root') {
     predicates.push("a.location_kind = 'managed' AND a.managed_folder_id IS NULL");

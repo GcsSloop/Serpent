@@ -123,10 +123,6 @@ test('imports a linked folder, reconciles external changes, and relinks after th
       .getByLabel('当前浏览范围')
       .getByRole('button', { name: 'source', exact: true })
       .click();
-    // 2026-09-15：外部移动的身份归并在刷新后的后台收敛里完成（前台刷新只保证「已重新
-    // 扫描」），所以这里轮询到收敛为止。**已知间歇失败**：watcher 增量路径会先把新路径
-    // 落成新资产、旧路径标 missing，此时全量刷新再也并不回来——预存在的 P1 `Serpent-463571`
-    // （干净 HEAD 上同样复现，与本次链接文件夹删除改动无关）；轮询失败即说明踩到了它。
     await expect
       .poll(async () => (await listAllAssets(window)).length, { timeout: 20_000 })
       .toBe(3);
@@ -136,21 +132,14 @@ test('imports a linked folder, reconciles external changes, and relinks after th
     expect(bAfterMove?.availability).toBe('available');
     expect(afterMove.some((asset) => asset.displayName === 'b.png')).toBe(false);
 
-    // If the source was removed outside Serpent, the missing linked record can
-    // still be cleared from the normal asset menu without reporting a trash
-    // failure for a path that no longer exists.
+    // External deletion removes the card automatically without a second
+    // delete command inside Serpent.
     rmSync(path.join(sourceRoot, 'sub', 'c.png'));
     const refreshAfterExternalDelete = window.getByRole('button', { name: '刷新磁盘变化' });
     await refreshAfterExternalDelete.click();
     await expect(refreshAfterExternalDelete).toBeEnabled({ timeout: 15_000 });
     await window.getByRole('button', { name: 'sub', exact: true }).click();
-    const missingC = assetCard(window, 'c.png');
-    await expect(missingC).toBeVisible();
-    await missingC.click({ button: 'right' });
-    // 源文件已被外部删除时，强制删除仍然只清库内记录（不因源文件缺失而失败）。
-    await window.getByRole('menuitem', { name: '强制从硬盘删除' }).click();
-    await confirmAssetDiskDelete(application);
-    await expect(missingC).toHaveCount(0);
+    await expect(assetCard(window, 'c.png')).toHaveCount(0);
     await window
       .getByLabel('当前浏览范围')
       .getByRole('button', { name: 'source', exact: true })

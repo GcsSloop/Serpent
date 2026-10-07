@@ -3860,6 +3860,10 @@ const NETWORK_METADATA_SNAPSHOT_TABLES = [
 
 type DiscoveredSourceEntry = {
   assetId?: string;
+  /** Destination for an external move; applied atomically with the source snapshot. */
+  movedToLinkedFolderId?: string;
+  /** A just-discovered, untouched copy admitted before the source removal event. */
+  replaceExternalAssetId?: string;
   /** SHA-1 prepared during async reconciliation, before the SQLite batch. */
   contentFingerprint?: string;
   /** Stable source identity used to detect an in-root external rename. */
@@ -3878,6 +3882,7 @@ interface RefreshManagedAssetsDiscovery {
   existingLinkedAssetIdsByFolder?: Map<string, Map<string, string>>;
   existingManagedAssetIdsByIdentity?: Map<string, string>;
   movedLinkedAssetsReconciled?: boolean;
+  linkedFingerprintsPrepared?: boolean;
 }
 
 type OpenReconciliationTask = LibraryReconciliationTask<OpenLibrary>;
@@ -7133,7 +7138,8 @@ export class LibraryService {
         await this.waitForStableWatcherDiscovery(task, discovery, existingAssets);
         this.assertReconciliationActive(task);
       }
-      this.reconcileMovedLinkedAssets(openLibrary, discovery, linkedFolderIdScope);
+      await this.prepareLinkedFingerprints(task, discovery);
+      this.reconcileMovedLinkedAssets(openLibrary, discovery);
       const networkFingerprint = task.reason === 'network' && openLibrary.summary.networkStorage
         ? this.networkDiscoveryFingerprint(discovery)
         : undefined;
@@ -7206,6 +7212,7 @@ export class LibraryService {
       changedCount += discovered.changedCount;
       missingCount += discovered.missingCount;
       markRefreshStage('apply-discovered-batches');
+      await this.purgeExpiredLinkedDeletions(task);
       if (changedCount > 0 && this.shouldEmitWatcherAssetChange()) {
         this.options.onAssetsChanged?.({
           type: 'asset.changed',
@@ -7247,7 +7254,6 @@ export class LibraryService {
       byte_size: number | null;
       modified_at: string | null;
     }> = [];
-    const missingAssetIds: string[] = [];
     let inspectedPathCount = 0;
 
     if (pathsByFolder.size === 0) return null;
@@ -7301,7 +7307,9 @@ export class LibraryService {
           stat = await lstatAsync(absolutePath);
         } catch (error) {
           if (!isMissingPathError(error)) return null;
-          if (existing) missingAssetIds.push(existing.asset_id);
+          // A removal may be the first half of a move. Use the complete root
+          // snapshot so matching runs before removing the old catalog row.
+          if (existing) return null;
           inspectedPathCount += 1;
           continue;
         }
@@ -7349,17 +7357,6 @@ export class LibraryService {
 
     let changedCount = 0;
     let missingCount = 0;
-    const missingBatchSize = openLibrary.summary.networkStorage ? 16 : 64;
-    for (let offset = 0; offset < missingAssetIds.length; offset += missingBatchSize) {
-      this.assertReconciliationActive(task);
-      const result = this.refreshManagedAssets(task.libraryId, {
-        assetIds: missingAssetIds.slice(offset, offset + missingBatchSize),
-        discoverSources: false,
-      });
-      changedCount += result.changedCount;
-      missingCount += result.missingCount;
-      await this.yieldReconciliation(task);
-    }
 
     if (linkedEntriesByFolder.size > 0) {
       const discovery: RefreshManagedAssetsDiscovery = {
@@ -7380,88 +7377,235 @@ export class LibraryService {
     return { changedCount, inspectedPathCount, missingCount };
   }
 
-  /**
-   * Relative paths identify catalog locations, not linked source files. A
-   * same-volume move keeps the source device/inode, so claim an unclaimed new
-   * path for the old asset before stale rows are marked missing. Ambiguous or
-   * unavailable identities are deliberately left as missing + new: guessing
-   * would silently attach the wrong file to the user's metadata.
+  /** Hash source bytes outside SQLite transactions, yielding between files/chunks.
+   * Linked imports deliberately do not hash under the initial bulk INSERT.
+   * Backfill unchanged revisions in the background before a copy/delete move.
+   */
+  private async prepareLinkedFingerprints(
+    task: OpenReconciliationTask,
+    discovery: RefreshManagedAssetsDiscovery,
+  ): Promise<void> {
+    const connection = task.openLibrary.connection;
+    const lookup = connection.prepare(
+      `SELECT r.revision_id, r.byte_size, r.modified_at, r.content_fingerprint
+         FROM assets a JOIN revisions r ON r.revision_id = a.current_revision_id
+        WHERE a.linked_folder_id = ? AND a.path_identity = ? AND a.deleted_at IS NULL`,
+    );
+    for (const [folderId, entries] of discovery.linkedEntriesByFolder) {
+      for (const entry of entries) {
+        this.assertReconciliationActive(task);
+        const row = lookup.get(folderId, portablePathIdentity(entry.relativePath)) as {
+          revision_id: string; byte_size: number; modified_at: string; content_fingerprint: string | null;
+        } | undefined;
+        const unchanged = row && row.byte_size === entry.byteSize
+          && Math.abs(Date.parse(row.modified_at) - Date.parse(entry.modifiedAt)) <= 1;
+        if (unchanged && row.content_fingerprint) {
+          entry.contentFingerprint = row.content_fingerprint;
+          continue;
+        }
+        const sourcePath = this.linkedAssetPath(task.openLibrary, folderId, entry.relativePath);
+        try {
+          const fingerprint = await this.computeContentFingerprintAsync(
+            sourcePath, task.controller.signal, undefined, () => this.yieldReconciliation(task),
+          );
+          const stat = await lstatAsync(sourcePath);
+          // A copy/edit during hashing invalidates the snapshot. Retry on the
+          // trailing watcher pass; never attach metadata from unstable bytes.
+          if (stat.size !== entry.byteSize
+            || Math.abs(stat.mtimeMs - Date.parse(entry.modifiedAt)) >= 2) {
+            throw new Error('Linked source changed while computing its fingerprint.');
+          }
+          entry.contentFingerprint = fingerprint;
+          if (unchanged) {
+            connection.prepare(
+              `UPDATE revisions SET content_fingerprint = ?
+                WHERE revision_id = ? AND content_fingerprint IS NULL`,
+            ).run(fingerprint, row.revision_id);
+          }
+        } catch (error) {
+          // A source changing while it is being hashed is a normal watcher
+          // race; the next debounced pass gets a fresh stable snapshot.
+          if (!isUnreadablePathError(error)
+            && !(error instanceof Error && error.message === 'Linked source changed while computing its fingerprint.')) {
+            throw error;
+          }
+          // An unreadable source is not proof of deletion and cannot be a
+          // hash candidate. Existing availability handling remains authoritative.
+        }
+        await this.yieldReconciliation(task);
+      }
+    }
+    discovery.linkedFingerprintsPrepared = true;
+  }
+
+  /** Preserve catalog identity on a unique inode move or name + hash match.
+   * Removed linked rows are invisible tombstones for five minutes so split
+   * delete/add notifications can still recover all metadata, including AI and
+   * collection membership. No source file is touched by this reconciliation.
    */
   private reconcileMovedLinkedAssets(
     openLibrary: OpenLibrary,
     discovery: RefreshManagedAssetsDiscovery,
-    linkedFolderIds = discovery.scopedLinkedFolderIds,
   ): void {
     if (discovery.movedLinkedAssetsReconciled) return;
-    const scopedLinkedFolderIds = linkedFolderIds?.size
-      ? [...linkedFolderIds]
-      : undefined;
-    const rows = openLibrary.connection
-      .prepare(
-        `SELECT asset_id, linked_folder_id, source_device, source_inode
-           FROM assets
-          WHERE location_kind = 'linked' AND deleted_at IS NULL
-            ${scopedLinkedFolderIds === undefined
-              ? ''
-              : `AND linked_folder_id IN (${scopedLinkedFolderIds.map(() => '?').join(',')})`}`,
-      )
-      .all(...(scopedLinkedFolderIds ?? [])) as Array<{
-        asset_id: string;
-        linked_folder_id: string;
-        source_device: string | null;
-        source_inode: string | null;
-      }>;
-    const sourceAssetByIdentity = new Map<string, string | null>();
+    const expiry = new Date(Date.now() - 5 * 60_000).toISOString();
+    const rows = openLibrary.connection.prepare(
+      `SELECT a.asset_id, a.linked_folder_id, a.relative_file_path, a.deleted_at,
+              a.trashed_from_relative_path, a.source_device, a.source_inode,
+              r.byte_size, r.content_fingerprint, r.origin, a.created_at
+         FROM assets a LEFT JOIN revisions r ON r.revision_id = a.current_revision_id
+        WHERE a.location_kind = 'linked' AND (a.deleted_at IS NULL OR a.deleted_at >= ?)`,
+    ).all(expiry) as Array<{
+      asset_id: string; linked_folder_id: string; relative_file_path: string;
+      deleted_at: string | null; trashed_from_relative_path: string | null;
+      source_device: string | null; source_inode: string | null;
+      byte_size: number | null; content_fingerprint: string | null; origin: string | null; created_at: string;
+    }>;
+    const discoveredPaths = new Map([...discovery.linkedEntriesByFolder].map(([id, entries]) => [
+      id, new Set(entries.map((entry) => portablePathIdentity(entry.relativePath))),
+    ]));
+    // Cross-root matching may be scoped to only the destination watcher. Probe
+    // an old path only for a plausible candidate; never rescan every other root.
+    const absent = (row: typeof rows[number]): boolean => {
+      if (row.deleted_at !== null) return true;
+      const paths = discoveredPaths.get(row.linked_folder_id);
+      if (paths?.has(portablePathIdentity(row.relative_file_path))) return false;
+      try {
+        lstatSync(this.linkedAssetPath(openLibrary, row.linked_folder_id, row.relative_file_path));
+        return false;
+      } catch (error) {
+        const folder = openLibrary.connection.prepare('SELECT status FROM linked_folders WHERE folder_id = ?')
+          .get(row.linked_folder_id) as { status: string } | undefined;
+        return folder?.status === 'available' && isMissingPathError(error)
+          && this.linkedFolderSourceAvailable(openLibrary, row.linked_folder_id);
+      }
+    };
+    const bySource = new Map<string, typeof rows>();
+    const byNameAndSize = new Map<string, typeof rows>();
     for (const row of rows) {
-      const sourceIdentity = sourceIdentityKey(row.source_device, row.source_inode);
-      const identity = sourceIdentity === undefined
-        ? undefined
-        : `${row.linked_folder_id}\u0000${sourceIdentity}`;
-      if (!identity) continue;
-      if (!sourceAssetByIdentity.has(identity)) {
-        sourceAssetByIdentity.set(identity, row.asset_id);
-      } else {
-        // Duplicate identities are not safe to reconcile automatically. This
-        // can happen on filesystems that report a zero/unstable inode; keep
-        // the key explicitly ambiguous instead of letting insertion order win.
-        sourceAssetByIdentity.set(identity, null);
+      const identity = sourceIdentityKey(row.source_device, row.source_inode);
+      if (identity) {
+        const group = bySource.get(identity) ?? [];
+        group.push(row);
+        bySource.set(identity, group);
+      }
+      const nameKey = `${path.posix.basename(row.trashed_from_relative_path ?? row.relative_file_path)}\u0000${row.byte_size}`;
+      if (row.content_fingerprint) {
+        const group = byNameAndSize.get(nameKey) ?? [];
+        group.push(row);
+        byNameAndSize.set(nameKey, group);
       }
     }
-
+    const absentCache = new Map<string, boolean>();
+    const isAbsent = (row: typeof rows[number]): boolean => {
+      if (!absentCache.has(row.asset_id)) absentCache.set(row.asset_id, absent(row));
+      return absentCache.get(row.asset_id)!;
+    };
+    const rowById = new Map(rows.map((row) => [row.asset_id, row]));
+    const provisionalCache = new Map<string, boolean>();
+    const isUntouchedAddition = (row: typeof rows[number]): boolean => {
+      if (row.deleted_at || row.origin !== 'external_change' || row.created_at < expiry) return false;
+      if (!provisionalCache.has(row.asset_id)) {
+        const used = openLibrary.connection.prepare(
+          `SELECT EXISTS(SELECT 1 FROM asset_metadata WHERE asset_id = ?)
+               OR EXISTS(SELECT 1 FROM human_asset_tags WHERE asset_id = ?)
+               OR EXISTS(SELECT 1 FROM ai_asset_tags WHERE asset_id = ?)
+               OR EXISTS(SELECT 1 FROM ai_content WHERE asset_id = ?)
+               OR EXISTS(SELECT 1 FROM collection_assets WHERE asset_id = ?) AS touched`,
+        ).get(row.asset_id, row.asset_id, row.asset_id, row.asset_id, row.asset_id) as { touched: number };
+        provisionalCache.set(row.asset_id, !used.touched);
+      }
+      return provisionalCache.get(row.asset_id)!;
+    };
+    // If the add notification arrived first in another watched root, arrange a
+    // narrowly scoped trailing pass there. That pass can merge its untouched
+    // provisional row with the source tombstone instead of losing the metadata.
+    const trailingRoots = new Set<string>();
+    for (const row of rows) {
+      const paths = discoveredPaths.get(row.linked_folder_id);
+      if (row.deleted_at || !paths || paths.has(portablePathIdentity(row.relative_file_path))
+        || !row.content_fingerprint) continue;
+      const key = `${path.posix.basename(row.relative_file_path)}\u0000${row.byte_size}`;
+      for (const addition of byNameAndSize.get(key) ?? []) {
+        if (!discoveredPaths.has(addition.linked_folder_id)
+          && addition.content_fingerprint === row.content_fingerprint
+          && isUntouchedAddition(addition) && isAbsent(row)) trailingRoots.add(addition.linked_folder_id);
+      }
+    }
+    if (trailingRoots.size > 0) this.scheduleWatcherRefresh(openLibrary.summary.libraryId, {
+      scope: 'linked-folder.move-trailing', libraryId: openLibrary.summary.libraryId,
+      linkedFolderIds: [...trailingRoots],
+    });
+    const claimed = new Set<string>();
+    const pending: Array<{ folderId: string; entry: DiscoveredSourceEntry; candidates: typeof rows }> = [];
     for (const [folderId, entries] of discovery.linkedEntriesByFolder) {
-      const existingByPath = discovery.existingLinkedAssetIdsByFolder?.get(folderId)
-        ?? new Map(
-          (openLibrary.connection
-            .prepare('SELECT asset_id, path_identity FROM assets WHERE linked_folder_id = ?')
-            .all(folderId) as Array<{ asset_id: string; path_identity: string }>)
-            .map((row) => [row.path_identity, row.asset_id] as const),
-        );
+      const existingByPath = new Map(rows.filter((row) => row.linked_folder_id === folderId && !row.deleted_at)
+        .map((row) => [portablePathIdentity(row.relative_file_path), row.asset_id]));
       discovery.existingLinkedAssetIdsByFolder ??= new Map();
       discovery.existingLinkedAssetIdsByFolder.set(folderId, existingByPath);
-      const claimedAssetIds = new Set(
-        entries.flatMap((entry) => entry.assetId === undefined ? [] : [entry.assetId]),
-      );
       for (const entry of entries) {
-        if (entry.assetId !== undefined) continue;
+        entry.assetId ??= existingByPath.get(portablePathIdentity(entry.relativePath));
+        if (entry.assetId !== undefined) {
+          claimed.add(entry.assetId);
+          const existing = rowById.get(entry.assetId);
+          if (!existing || !isUntouchedAddition(existing)) continue;
+          entry.contentFingerprint ??= existing.content_fingerprint ?? undefined;
+          const prior = (byNameAndSize.get(`${entry.originalFilename}\u0000${entry.byteSize}`) ?? [])
+            .filter((candidate) => candidate.deleted_at !== null
+              && candidate.content_fingerprint === entry.contentFingerprint);
+          if (prior.length === 1) {
+            entry.replaceExternalAssetId = entry.assetId;
+            entry.assetId = prior[0]!.asset_id;
+            entry.movedToLinkedFolderId = folderId;
+            claimed.add(entry.assetId);
+          }
+          continue;
+        }
         const sourceIdentity = sourceIdentityKey(entry.sourceDevice, entry.sourceInode);
-        const identity = sourceIdentity === undefined
-          ? undefined
-          : `${folderId}\u0000${sourceIdentity}`;
-        if (!identity) continue;
-        const assetId = sourceAssetByIdentity.get(identity);
-        if (assetId === undefined || assetId === null || claimedAssetIds.has(assetId)) continue;
-        const pathIdentity = portablePathIdentity(entry.relativePath);
-        if (existingByPath.has(pathIdentity)) continue;
-        entry.assetId = assetId;
-        existingByPath.set(pathIdentity, assetId);
-        claimedAssetIds.add(assetId);
-        this.diagnose('linked-folder.sync.asset-moved', 'External file moved within the linked root; asset reconciled to new path', {
-          libraryId: openLibrary.summary.libraryId,
-          assetId,
-          linkedFolderId: folderId,
-          newRelativePath: entry.relativePath,
+        const sameName = byNameAndSize.get(`${entry.originalFilename}\u0000${entry.byteSize}`) ?? [];
+        // Explicit synchronous refreshes hash only plausible new candidates.
+        // Background scans have already streamed their fingerprints asynchronously.
+        if (!discovery.linkedFingerprintsPrepared && sameName.length > 0) {
+          entry.contentFingerprint = this.computeContentFingerprint(
+            this.linkedAssetPath(openLibrary, folderId, entry.relativePath),
+          );
+        }
+        const plausible = [...new Set([...(sourceIdentity ? bySource.get(sourceIdentity) ?? [] : []), ...sameName])];
+        const candidates = plausible.filter((row) => {
+          const sameInode = sourceIdentity !== undefined
+            && sourceIdentityKey(row.source_device, row.source_inode) === sourceIdentity;
+          const sameHash = entry.contentFingerprint !== undefined
+            && entry.contentFingerprint === row.content_fingerprint;
+          const sameNameAndHash = sameHash && row.byte_size === entry.byteSize
+            && path.posix.basename(row.trashed_from_relative_path ?? row.relative_file_path) === entry.originalFilename;
+          // Inodes can be reused after deletion. A known hash mismatch wins.
+          const safeInode = sameInode && row.byte_size === entry.byteSize
+            && !(entry.contentFingerprint && row.content_fingerprint && !sameHash);
+          return (safeInode || sameNameAndHash) && isAbsent(row);
         });
+        pending.push({ folderId, entry, candidates });
       }
+    }
+    const claimsPerAsset = new Map<string, number>();
+    for (const item of pending) for (const candidate of item.candidates) {
+      claimsPerAsset.set(candidate.asset_id, (claimsPerAsset.get(candidate.asset_id) ?? 0) + 1);
+    }
+    for (const { folderId, entry, candidates } of pending) {
+      if (candidates.length !== 1) continue;
+      const row = candidates[0]!;
+      if (claimed.has(row.asset_id)
+        || claimsPerAsset.get(row.asset_id) !== 1) continue;
+      entry.replaceExternalAssetId = entry.assetId;
+      entry.assetId = row.asset_id;
+      entry.movedToLinkedFolderId = folderId;
+      discovery.existingLinkedAssetIdsByFolder!.get(folderId)!.set(portablePathIdentity(entry.relativePath), row.asset_id);
+      claimed.add(row.asset_id);
+      this.diagnose('linked-folder.sync.asset-moved', 'External file moved; catalog identity and metadata retained', {
+        libraryId: openLibrary.summary.libraryId, assetId: row.asset_id, linkedFolderId: folderId,
+        previousLinkedFolderId: row.linked_folder_id,
+        oldRelativePath: row.trashed_from_relative_path ?? row.relative_file_path,
+        newRelativePath: entry.relativePath,
+      });
     }
     discovery.movedLinkedAssetsReconciled = true;
   }
@@ -9813,6 +9957,8 @@ export class LibraryService {
 
   reconcileLinkedWatchersForLibrary(libraryId: string): void {
     this.reconcileLinkedWatchers(this.requireOpenLibrary(libraryId));
+    this.scheduleWatcherRefresh(libraryId, { scope: 'linked-folder.fingerprint-backfill', libraryId,
+      linkedFolderIds: this.listLinkedFolders(libraryId).map((folder) => folder.folderId) });
   }
 
   private requireOpenLibrary(libraryId: string): OpenLibrary {
@@ -12626,6 +12772,12 @@ export class LibraryService {
 
   private linkedRootIsGone(absoluteRootPath: string): boolean {
     return !this.linkedRootAvailability(absoluteRootPath).available;
+  }
+
+  private linkedFolderSourceAvailable(openLibrary: OpenLibrary, folderId: string | null): boolean {
+    const folder = openLibrary.connection.prepare('SELECT absolute_root_path FROM linked_folders WHERE folder_id = ?')
+      .get(folderId) as { absolute_root_path: string } | undefined;
+    return folder !== undefined && !this.linkedRootIsGone(folder.absolute_root_path);
   }
 
   private linkedAssetPath(
@@ -18442,7 +18594,7 @@ export class LibraryService {
           AND video_meta.kind = 'extracted_metadata'
           ${artifactColumns.has('status') ? "AND video_meta.status = 'ready'" : ''}
           AND video_meta.invalidated_at IS NULL
-        WHERE ${hasTable(connection, 'linked_ignored_assets')
+        WHERE (a.deleted_at IS NULL OR a.location_kind = 'managed') AND ${hasTable(connection, 'linked_ignored_assets')
           ? 'NOT EXISTS (SELECT 1 FROM linked_ignored_assets ignored WHERE ignored.asset_id = a.asset_id) AND '
           : ''}${this.explicitIgnoreSql(connection, 'a', input.showIgnored === true)} AND ${idPredicateSql}
         ORDER BY a.relative_file_path`;
@@ -18780,7 +18932,7 @@ export class LibraryService {
       // as the catalog is committed (GitHub #45): overlay and later commands
       // do not wait on fs.watch setup.
       if (input.reconcileWatchers !== false) {
-        this.reconcileLinkedWatchers(openLibrary);
+        this.reconcileLinkedWatchersForLibrary(input.libraryId);
       }
 
       return {
@@ -19010,7 +19162,9 @@ export class LibraryService {
         : null,
     ].filter((sql): sql is string => sql !== null);
     const usedJoin = tagUseSubqueries.length > 0
-      ? `LEFT JOIN (${tagUseSubqueries.join(' UNION ')}) used ON used.tag_id = t.tag_id`
+      ? `LEFT JOIN (${tagUseSubqueries.join(' UNION ')}) used ON used.tag_id = t.tag_id
+          AND EXISTS (SELECT 1 FROM assets tagged WHERE tagged.asset_id = used.asset_id
+            AND (tagged.deleted_at IS NULL OR tagged.location_kind = 'managed'))`
       : '';
     const groupBy = hasCreatedAt
       ? 'GROUP BY t.tag_id, t.name, t.created_at'
@@ -39432,7 +39586,7 @@ export class LibraryService {
     const openLibrary = this.requireOpenLibrary(libraryId);
 
     const rows = openLibrary.connection
-      .prepare(`SELECT asset_id FROM assets WHERE deleted_at IS NOT NULL`)
+      .prepare(`SELECT asset_id FROM assets WHERE deleted_at IS NOT NULL AND location_kind = 'managed'`)
       .all() as Array<{ asset_id: string }>;
 
     const operationId = randomUUID();
@@ -39515,7 +39669,7 @@ export class LibraryService {
     const expiryDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const rows = openLibrary.connection
       .prepare(
-        `SELECT asset_id FROM assets WHERE deleted_at IS NOT NULL AND deleted_at < ?`,
+        `SELECT asset_id FROM assets WHERE deleted_at IS NOT NULL AND location_kind = 'managed' AND deleted_at < ?`,
       )
       .all(expiryDate) as Array<{ asset_id: string }>;
 
@@ -39648,7 +39802,7 @@ export class LibraryService {
            FROM assets a
            JOIN revisions r ON r.revision_id = a.current_revision_id
            LEFT JOIN asset_metadata m ON m.asset_id = a.asset_id
-          WHERE a.deleted_at IS NOT NULL
+          WHERE a.deleted_at IS NOT NULL AND a.location_kind = 'managed'
           ORDER BY a.deleted_at DESC`,
       )
       .all() as Array<AssetSummaryRow & {
@@ -44845,7 +44999,7 @@ export class LibraryService {
       if (!byteChanged && !mtimeChanged) continue;
 
       const sourcePath = asset.location_kind === 'linked'
-        ? this.linkedAssetPath(openLibrary, asset.linked_folder_id, entry.relativePath)
+        ? this.linkedAssetPath(openLibrary, entry.movedToLinkedFolderId ?? asset.linked_folder_id, entry.relativePath)
         : this.folderPath(openLibrary, entry.relativePath);
       // This is deliberately awaited before refreshManagedAssets enters its
       // transaction. The bounded stream prevents a large source from causing
@@ -44916,6 +45070,22 @@ export class LibraryService {
         ),
       ),
     };
+  }
+
+  private async purgeExpiredLinkedDeletions(task: OpenReconciliationTask): Promise<void> {
+    const connection = task.openLibrary.connection;
+    const expiry = new Date(Date.now() - 5 * 60_000).toISOString();
+    const rows = connection.prepare(
+      "SELECT asset_id FROM assets WHERE location_kind = 'linked' AND deleted_at < ?",
+    ).all(expiry) as Array<{ asset_id: string }>;
+    for (let offset = 0; offset < rows.length; offset += 64) {
+      this.assertReconciliationActive(task);
+      connection.transaction(() => {
+        const remove = connection.prepare("DELETE FROM assets WHERE asset_id = ? AND location_kind = 'linked' AND deleted_at < ?");
+        for (const row of rows.slice(offset, offset + 64)) remove.run(row.asset_id, expiry);
+      })();
+      await this.yieldReconciliation(task);
+    }
   }
 
   private reconciliationAbortError(): Error {
@@ -45291,6 +45461,7 @@ export class LibraryService {
           existingLinkedAssetIdsByFolder: discovery.existingLinkedAssetIdsByFolder,
           existingManagedAssetIdsByIdentity: discovery.existingManagedAssetIdsByIdentity,
           movedLinkedAssetsReconciled: true,
+          linkedFingerprintsPrepared: true,
         };
         const result = this.refreshManagedAssets(task.libraryId, {
           assetIds: batch.flatMap((entry) => entry.assetId ?? []),
@@ -45335,6 +45506,14 @@ export class LibraryService {
       source_device: string | null;
       source_inode: string | null;
     };
+    const discoverSources = options?.discoverSources ?? true;
+    const discovery = discoverSources
+      ? options?.discovery ?? this.collectManagedAssetDiscovery(openLibrary)
+      : undefined;
+    if (discovery) this.reconcileMovedLinkedAssets(openLibrary, discovery);
+    const movedAssetIds = [...(discovery?.linkedEntriesByFolder.values() ?? [])].flat()
+      .flatMap((entry) => entry.movedToLinkedFolderId && entry.assetId ? [entry.assetId] : []);
+    const movedParams = movedAssetIds.length > 0 ? [JSON.stringify(movedAssetIds)] : [];
     const queryBefore = (placeholders?: string): string =>
       `SELECT a.asset_id, a.location_kind, a.linked_folder_id, a.relative_file_path,
               a.current_revision_id, r.revision_id AS revision_row_id,
@@ -45342,17 +45521,14 @@ export class LibraryService {
               r.content_fingerprint, a.source_device, a.source_inode
         FROM assets a
          LEFT JOIN revisions r ON r.revision_id = a.current_revision_id
-        WHERE a.deleted_at IS NULL${placeholders === undefined
+        WHERE ${movedAssetIds.length > 0
+          ? "(a.deleted_at IS NULL OR a.asset_id IN (SELECT value FROM json_each(?)))"
+          : "a.deleted_at IS NULL"}${placeholders === undefined
           ? ''
           : placeholders === ''
             ? ' AND 1 = 0'
             : ` AND a.asset_id IN (${placeholders})`}
         ORDER BY a.relative_file_path`;
-    const discoverSources = options?.discoverSources ?? true;
-    const discovery = discoverSources
-      ? options?.discovery ?? this.collectManagedAssetDiscovery(openLibrary)
-      : undefined;
-    if (discovery) this.reconcileMovedLinkedAssets(openLibrary, discovery);
     // Serpent-onch 风格分阶段计时：SERPENT_REFRESH_STAGE_LOG=1 时输出各阶段耗时，
     // 用于大库全量对账的归因（Serpent-4bdd26）。生产默认关闭。
     const stageLog = process.env.SERPENT_REFRESH_STAGE_LOG === '1';
@@ -45371,11 +45547,12 @@ export class LibraryService {
     };
     const requestedAssetIds = assetIds === undefined ? undefined : [...new Set(assetIds)];
     const before = requestedAssetIds === undefined
-      ? openLibrary.connection.prepare(queryBefore()).all() as RefreshAssetRow[]
+      ? openLibrary.connection.prepare(queryBefore()).all(...movedParams) as RefreshAssetRow[]
       : sqliteAllInChunks<string, RefreshAssetRow>({
           connection: openLibrary.connection,
           values: requestedAssetIds,
           buildSql: queryBefore,
+          bind: (chunk) => [...movedParams, ...chunk],
         });
     markStage('before-query');
 
@@ -45459,7 +45636,7 @@ export class LibraryService {
         sourcePath ??= asset.location_kind === 'linked'
           ? this.linkedAssetPath(
             openLibrary,
-            asset.linked_folder_id,
+            entry?.movedToLinkedFolderId ?? asset.linked_folder_id,
             entry?.relativePath ?? asset.relative_file_path,
           )
           : this.folderPath(
@@ -45540,8 +45717,8 @@ export class LibraryService {
         const insertRevision = openLibrary.connection.prepare(
           `INSERT INTO revisions
              (revision_id, asset_id, parent_revision_id, byte_size, modified_at,
-              original_filename, origin, accepted_at)
-           VALUES (?, ?, NULL, ?, ?, ?, 'external_change', ?)`,
+              original_filename, origin, accepted_at, content_fingerprint)
+           VALUES (?, ?, NULL, ?, ?, ?, 'external_change', ?, ?)`,
         );
         const setCurrentRevision = openLibrary.connection.prepare(
           'UPDATE assets SET current_revision_id = ?, updated_at = ? WHERE asset_id = ?',
@@ -45575,6 +45752,7 @@ export class LibraryService {
             entry.modifiedAt,
             entry.originalFilename,
             folderNow,
+            entry.contentFingerprint ?? null,
           );
           setCurrentRevision.run(revisionId, folderNow, assetId);
           existingIdentities.set(pathIdentity, assetId);
@@ -45737,8 +45915,9 @@ export class LibraryService {
           : managedSnapshot.get(snapshotKey);
         const pathChanged = asset.location_kind === 'linked'
           && snapshotEntry !== undefined
-          && portablePathIdentity(asset.relative_file_path)
-            !== portablePathIdentity(snapshotEntry.relativePath);
+          && (portablePathIdentity(asset.relative_file_path)
+            !== portablePathIdentity(snapshotEntry.relativePath)
+            || snapshotEntry.movedToLinkedFolderId !== undefined);
         const preflightSource = preflightSourceByAssetId.get(asset.asset_id);
         let snapshotByteSize: number | null = null;
         let snapshotModifiedAt: string | null = null;
@@ -45752,6 +45931,7 @@ export class LibraryService {
             ? this.linkedAssetPath(openLibrary, asset.linked_folder_id, asset.relative_file_path)
             : this.folderPath(openLibrary, asset.relative_file_path);
         let fileStat: BigIntStats | Stats | undefined;
+        let sourceIsGone = false;
         if (snapshotEntry) {
           snapshotByteSize = Number.isSafeInteger(snapshotEntry.byteSize)
             ? snapshotEntry.byteSize
@@ -45764,6 +45944,7 @@ export class LibraryService {
               : lstatSync(resolveAssetPath(), { bigint: true });
           } catch (error) {
             if (isUnreadablePathError(error)) {
+              sourceIsGone = isMissingPathError(error);
               fileStat = undefined;
             } else {
               throw new LibraryServiceError('IMPORT_APPLY_FAILED', { cause: error });
@@ -45782,6 +45963,25 @@ export class LibraryService {
           ? true
           : Boolean(fileStat?.isFile() && !fileStat.isSymbolicLink());
         if (!snapshotEntry && (!fileStat || !statIsFile)) {
+          if (sourceIsGone && asset.location_kind === 'linked'
+            && !offlineLinkedFolderIds.has(asset.linked_folder_id ?? '')
+            && this.linkedFolderSourceAvailable(openLibrary, asset.linked_folder_id)) {
+            const now = new Date().toISOString();
+            const tombstonePath = `.serpent-external-deleted/${asset.asset_id}/${path.posix.basename(asset.relative_file_path)}`;
+            openLibrary.connection.prepare(
+              `UPDATE assets SET deleted_at = ?, availability = 'missing',
+                  trashed_from_relative_path = ?, relative_file_path = ?, path_identity = ?, updated_at = ?
+                WHERE asset_id = ?`,
+            ).run(now, asset.relative_file_path, tombstonePath, portablePathIdentity(tombstonePath), now, asset.asset_id);
+            this.syncAssetSearchContent(openLibrary.connection, asset.asset_id);
+            changedCount += 1;
+            this.diagnose('linked-folder.sync.asset-deleted', 'External file removed from the catalog', {
+              libraryId, assetId: asset.asset_id, linkedFolderId: asset.linked_folder_id,
+              relativeFilePath: asset.relative_file_path,
+            });
+            continue;
+          }
+
           if (asset.availability === 'available') {
             openLibrary.connection
               .prepare("UPDATE assets SET availability = 'missing', updated_at = ? WHERE asset_id = ?")
@@ -45821,6 +46021,19 @@ export class LibraryService {
         const modifiedAt = snapshotModifiedAt
           ?? new Date(Number(fileStat!.mtimeMs)).toISOString();
         const currentRelativePath = snapshotEntry?.relativePath ?? asset.relative_file_path;
+        if (snapshotEntry?.movedToLinkedFolderId) {
+          if (snapshotEntry.replaceExternalAssetId) {
+            openLibrary.connection.prepare('DELETE FROM assets WHERE asset_id = ?')
+              .run(snapshotEntry.replaceExternalAssetId);
+          }
+
+          openLibrary.connection.prepare(
+            `UPDATE assets SET linked_folder_id = ?, relative_file_path = ?, path_identity = ?,
+                deleted_at = NULL, trashed_from_relative_path = NULL WHERE asset_id = ?`,
+          ).run(snapshotEntry.movedToLinkedFolderId, currentRelativePath,
+            portablePathIdentity(currentRelativePath), asset.asset_id);
+        }
+
         if (!asset.revision_row_id) {
           // A dangling current_revision_id (or a NULL revision after a partial
           // write) must stay visible until this source-backed repair completes.

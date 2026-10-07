@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -1139,9 +1140,11 @@ describe('Linked folder sync diagnostics', () => {
     rmSync(path.join(linkedRoot, 'gone.png'));
     service.refreshManagedAssets(library.libraryId);
 
-    const missing = diagnostics.find((d) => d.scope === 'linked-folder.sync.asset-missing');
+    const missing = diagnostics.find((d) => d.scope === 'linked-folder.sync.asset-deleted');
     expect(missing).toBeDefined();
     expect(missing?.context?.relativeFilePath).toBe('gone.png');
+    expect(service.listAssets({ libraryId: library.libraryId, recursive: true })).toEqual([]);
+    expect(service.listTrash(library.libraryId)).toEqual([]);
     // 变更摘要（中性 scope）同时触发
     expect(diagnostics.some((d) => d.scope === 'assets.sync.reconciled')).toBe(true);
     service.closeAll();
@@ -1163,6 +1166,32 @@ describe('Linked folder sync diagnostics', () => {
     const moved = diagnostics.find((d) => d.scope === 'linked-folder.sync.asset-moved');
     expect(moved).toBeDefined();
     expect(moved?.context?.newRelativePath).toBe('b.png');
+    service.closeAll();
+  });
+
+  it('inherits metadata when a same-name file is copied then the original is externally deleted', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'move.txt'), 'stable move bytes');
+    const service = newService();
+    const library = service.createLibrary({ displayName: 'HashMove', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+    const original = service.listAssets({ libraryId: library.libraryId, recursive: true })[0]!;
+    const tag = service.createTag({ libraryId: library.libraryId, name: 'move metadata' });
+    service.assignTags({ libraryId: library.libraryId, assetIds: [original.assetId], tagIds: [tag.tagId] });
+    const database = new TestDatabase(path.join(library.libraryPath, '.serpent', 'library.db'));
+    database.prepare('UPDATE revisions SET content_fingerprint = ? WHERE revision_id = ?')
+      .run(createHash('sha1').update('stable move bytes').digest('hex'), original.currentRevisionId);
+    database.close();
+    mkdirSync(path.join(linkedRoot, 'destination'));
+    writeFileSync(path.join(linkedRoot, 'destination', 'move.txt'), 'stable move bytes');
+    rmSync(path.join(linkedRoot, 'move.txt'));
+    service.refreshManagedAssets(library.libraryId);
+    const moved = service.listAssets({ libraryId: library.libraryId, recursive: true });
+    expect(moved).toHaveLength(1);
+    expect(moved[0]).toMatchObject({ assetId: original.assetId, relativeFilePath: 'destination/move.txt' });
+    expect(service.listTags(library.libraryId)).toContainEqual(expect.objectContaining({ tagId: tag.tagId, assetCount: 1 }));
     service.closeAll();
   });
 
