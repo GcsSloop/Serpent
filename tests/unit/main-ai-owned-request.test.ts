@@ -2,6 +2,7 @@ import { expect, test, vi } from "vitest";
 
 import { DEFAULT_AI_ANALYSIS_SETTINGS } from "../../src/shared/ai-analysis-settings";
 import { DEFAULT_AI_RELIABILITY_SETTINGS } from "../../src/shared/ai-reliability";
+import { createPublicError } from "../../src/shared/protocol/errors";
 import {
   tryHandleAiOwnedRequest,
   type AiOwnedConfig,
@@ -88,6 +89,37 @@ test("asset.analyze falls through when enqueue does not create a job", async () 
       })),
     }),
   )).resolves.toBeUndefined();
+});
+
+test.each(["LIBRARY_NOT_OPEN", "LIBRARY_READ_ONLY", "LIBRARY_BUSY"] as const)(
+  "analysis preserves %s from queue admission rather than blaming the AI service",
+  async (code) => {
+    const failure = { ok: false as const, error: createPublicError(code) };
+    for (const request of [
+      { type: "assets.analyze.request" as const, libraryId: "lib-1", assetIds: ["asset-1"] },
+      { type: "asset.analyze.request" as const, libraryId: "lib-1", assetId: "asset-1" },
+    ]) {
+      const state = runtime({ requestWorker: vi.fn(async () => failure) });
+      await expect(tryHandleAiOwnedRequest(request, state)).resolves.toEqual(failure);
+      expect(state.processAiQueue).not.toHaveBeenCalled();
+      expect(state.requestWorker).toHaveBeenCalledTimes(1);
+      expect(state.logInfo).toHaveBeenCalledWith(expect.any(String), expect.any(String),
+        expect.objectContaining({ errorCode: code }));
+    }
+  },
+);
+
+test("a batch containing only skipped assets returns their IDs without running inference", async () => {
+  const state = runtime({ requestWorker: vi.fn(async () => ({
+    ok: true as const, type: "ai.jobs.enqueued" as const, libraryId: "lib-1",
+    jobIds: [], alreadyPendingJobIds: [], skippedAssetIds: ["asset-1"], enqueued: 0,
+  })) });
+  await expect(tryHandleAiOwnedRequest({
+    type: "assets.analyze.request", libraryId: "lib-1", assetIds: ["asset-1"],
+  }, state)).resolves.toMatchObject({
+    ok: true, type: "assets.analyze-queued", jobIds: [], skippedAssetIds: ["asset-1"],
+  });
+  expect(state.processAiQueue).not.toHaveBeenCalled();
 });
 
 test("ai.config.get maps the stored config onto the renderer payload", async () => {

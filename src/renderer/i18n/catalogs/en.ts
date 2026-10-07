@@ -2218,7 +2218,7 @@ export const en = {
     aiAnalyzeDone: "AI analysis finished.",
     aiAnalyzeDoneBatch: "AI analysis finished: {succeeded} succeeded, {failed} failed.",
     aiAnalyzeDoneBatchWithSkipped: "AI analysis finished: {succeeded} succeeded, {skipped} skipped (already analyzed).",
-    aiAnalyzeSkippedBatch: "AI analysis was not run: {count} assets already have results and were skipped.",
+    aiAnalyzeSkippedBatch: "AI analysis was not run: {count} assets were skipped. Check format support, ignore rules, and whether the assets still exist.",
     aiAnalyzeSkippedSuffix: "{count} assets already had results and were skipped.",
     aiAnalyzeStarted: "AI analysis in progress…",
     aiAnalyzeStartedBatch: "AI analysis started for {count} assets…",

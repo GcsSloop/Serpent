@@ -24,6 +24,8 @@ test('packaged app saves keyless local AI settings and repeatedly analyzes with 
   const sources = [path.join(root, 'red.png'), path.join(root, 'green.png')] as const;
   await sharp({ create: { width: 320, height: 240, channels: 3, background: '#ff0000' } }).png().toFile(sources[0]);
   await sharp({ create: { width: 320, height: 240, channels: 3, background: '#00ff00' } }).png().toFile(sources[1]);
+  const unsupportedSource = path.join(root, 'unsupported.txt');
+  writeFileSync(unsupportedSource, 'An unsupported visual-analysis source');
   const app = await electron.launch({ executablePath, args: [], env: electronLaunchEnv({
     SERPENT_E2E: '1', SERPENT_E2E_USER_DATA_PATH: userData,
   }) });
@@ -33,21 +35,38 @@ test('packaged app saves keyless local AI settings and repeatedly analyzes with 
       dialog.showOpenDialog = async (...args: unknown[]) => {
         const options = args.at(-1) as { title?: string };
         const create = options.title === 'Create Library' || options.title === '创建资源库';
-        return { canceled: false, filePaths: create ? [input.root] : [...input.sources] };
+        return { canceled: false, filePaths: create ? [input.root] : [...input.sources, input.unsupportedSource] };
       };
-    }, { root, sources });
+    }, { root, sources, unsupportedSource });
     const window = await app.firstWindow();
     window.setDefaultTimeout(20_000);
     window.on('pageerror', (error) => console.log('test renderer error:', error.message));
     console.log('test stage: create library');
     await window.waitForLoadState('domcontentloaded');
     await expect(window.getByRole('heading', { name: '创建本地资源库' })).toBeVisible({ timeout: 30_000 });
+    const admissionError = await window.evaluate(() => {
+      const api = (globalThis as typeof globalThis & { serpent: { library: LibraryApi } }).serpent.library;
+      return api.analyzeAssets({ libraryId: 'not-open', assetIds: ['asset-1'] });
+    });
+    expect(admissionError).toMatchObject({ ok: false, error: { code: 'LIBRARY_NOT_OPEN' } });
     await window.getByRole('button', { name: '创建资源库' }).click();
     await window.getByRole('textbox', { name: '名称' }).fill('Local AI Acceptance');
     await window.getByRole('button', { name: '创建', exact: true }).click();
     await window.getByRole('button', { name: '导入文件', exact: true }).first().click();
     await expect(assetCard(window, 'red.png')).toBeVisible();
     await expect(assetCard(window, 'green.png')).toBeVisible();
+    const unsupported = assetCard(window, 'unsupported.txt');
+    await expect(unsupported).toBeVisible();
+    const skipped = await window.evaluate(async (assetId) => {
+      const api = (globalThis as typeof globalThis & { serpent: { library: LibraryApi } }).serpent.library;
+      const libraries = await api.listOpen();
+      if (!libraries.ok || !assetId) throw new Error('Missing test asset');
+      return api.analyzeAssets({ libraryId: libraries.value[0]!.libraryId, assetIds: [assetId] });
+    }, await unsupported.getAttribute('data-asset-id'));
+    expect(skipped).toMatchObject({ ok: true, value: { jobIds: [], enqueued: 0 } });
+    if (skipped.ok) expect(skipped.value.skippedAssetIds).toHaveLength(1);
+    report.admissionError = admissionError;
+    report.skippedUnsupportedAsset = skipped;
 
     console.log('test stage: AI settings');
     const dialog = await openAppSettingsDialog(app, window);

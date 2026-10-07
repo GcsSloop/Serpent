@@ -2200,7 +2200,7 @@ export const zhCN = {
     aiAnalyzeDone: "AI 分析完成。",
     aiAnalyzeDoneBatch: "AI 分析完成：成功 {succeeded} 项、失败 {failed} 项。",
     aiAnalyzeDoneBatchWithSkipped: "AI 分析完成：成功 {succeeded} 项，跳过 {skipped} 项（已有分析结果）。",
-    aiAnalyzeSkippedBatch: "未执行 AI 分析：{count} 项资产已有分析结果，已跳过。",
+    aiAnalyzeSkippedBatch: "未执行 AI 分析：{count} 项素材被跳过，请检查格式支持、忽略规则以及素材是否仍存在。",
     aiAnalyzeSkippedSuffix: "另有 {count} 项资产已有分析结果，已跳过。",
     aiAnalyzeStarted: "正在进行 AI 分析…",
     aiAnalyzeStartedBatch: "正在对 {count} 项资产进行 AI 分析…",

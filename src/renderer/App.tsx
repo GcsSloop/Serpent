@@ -12065,7 +12065,7 @@ function AppInner() {
       const skippedCount = result.value.skippedAssetIds.length;
       if (jobIds.length === 0) {
         if (skippedCount > 0) {
-          // 全部跳过（已有分析结果）——8-09 WIP 恢复：跳过不是失败
+          // Admission may skip unsupported, ignored, or no-longer-existing assets.
           setNotice(t("toast.aiAnalyzeSkippedBatch", { count: skippedCount }));
         } else {
           setError(t("toast.aiAnalyzeFailed"));

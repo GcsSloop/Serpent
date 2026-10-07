@@ -91,22 +91,28 @@ export async function tryHandleAiOwnedRequest(
           // 手动分析可覆盖已有 AI 结果（8-09 WIP 恢复：worker 已支持）
           forceExisting: true,
         });
+        if (!enqueueResult.ok) {
+          runtime.logInfo("ai.analyze.batch-enqueue-rejected", "AI analysis could not be queued.", {
+            libraryId: request.libraryId,
+            errorCode: enqueueResult.error.code,
+            reason: enqueueResult.error.reason,
+          });
+          return enqueueResult;
+        }
         if (enqueueResult.ok && enqueueResult.type === "ai.jobs.enqueued") {
           const jobIds = [
             ...enqueueResult.jobIds,
             ...enqueueResult.alreadyPendingJobIds,
           ];
-          if (jobIds.length > 0) {
-            void runtime.processAiQueue(request.libraryId);
-            return {
-              ok: true,
-              type: "assets.analyze-queued",
-              assetIds: request.assetIds,
-              jobIds,
-              skippedAssetIds: enqueueResult.skippedAssetIds,
-              enqueued: enqueueResult.enqueued,
-            } satisfies RendererResult;
-          }
+          if (jobIds.length > 0) void runtime.processAiQueue(request.libraryId);
+          return {
+            ok: true,
+            type: "assets.analyze-queued",
+            assetIds: request.assetIds,
+            jobIds,
+            skippedAssetIds: enqueueResult.skippedAssetIds,
+            enqueued: enqueueResult.enqueued,
+          } satisfies RendererResult;
         }
       } catch (error) {
         runtime.logError("ai.analyze.batch-enqueue", error);
@@ -141,6 +147,14 @@ export async function tryHandleAiOwnedRequest(
           // 手动分析可覆盖已有 AI 结果（8-09 WIP 恢复：worker 已支持）
           forceExisting: true,
         });
+        if (!enqueueResult.ok) {
+          runtime.logInfo("ai.analyze.enqueue-rejected", "AI analysis could not be queued.", {
+            libraryId: request.libraryId,
+            errorCode: enqueueResult.error.code,
+            reason: enqueueResult.error.reason,
+          });
+          return enqueueResult;
+        }
         if (
           enqueueResult.ok &&
           enqueueResult.type === "ai.jobs.enqueued" &&
