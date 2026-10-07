@@ -158,6 +158,7 @@ export class DashScopeVendorAdapter implements VendorAdapter {
       settings: resolveAiAnalysisSettings(request),
       enabledFields: request.enabledFields,
       existingTagNames: request.existingTagNames,
+      mediaType: request.mediaType,
     }) + '\nReturn only one JSON object with no Markdown fences.\n';
   }
 

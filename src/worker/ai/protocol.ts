@@ -172,7 +172,8 @@ export interface AiAnalysisRequest {
   filename: string;
   mime: string;
   /** Visual presentation kind — drives the system prompt explanation. */
-  mediaType?: 'image' | 'video' | 'model';
+  mediaType?: 'image' | 'video' | 'model' | 'document';
+  visualSourceDescription?: string;
   contactSheetDescription?: string;
   imageBase64?: string;
   contactSheetBase64?: string;
@@ -205,6 +206,9 @@ export function buildAiAnalysisUserTextLines(
     `- Name: ${request.displayName}`,
     `Filename: ${request.filename}`,
   ];
+  if (request.visualSourceDescription) {
+    lines.push(`Visual source: ${request.visualSourceDescription}`);
+  }
   if (request.contactSheetDescription) {
     lines.push(`Contact sheet description: ${request.contactSheetDescription}`);
   }

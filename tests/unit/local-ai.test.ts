@@ -15,6 +15,21 @@ const image = {
 };
 const reply = { model, output: [{ type: 'message', content: [{ type: 'output_text', text: '{"description":"红色", "tags":["红色"], "rating":3}' }] }] };
 
+it.each(['openai_chat', 'openai_responses'] as const)('sends a bounded document preview with explicit page scope via %s', async (format) => {
+  const fetchFn = vi.fn<typeof fetch>(async () => Response.json(format === 'openai_chat'
+    ? { model, choices: [{ message: { content: '{"description":"红色页面","tags":["文档"],"rating":3}' } }] }
+    : reply));
+  const adapter = new OpenAIVendorAdapter('', model, fetchFn as typeof fetch, local.baseUrl, format);
+  await adapter.analyze({ ...image, filename: 'page.pdf', displayName: 'page.pdf',
+    mime: 'image/jpeg', mediaType: 'document', visualSourceDescription: 'Only the first page is visible.' });
+  const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+  const serialized = JSON.stringify(body);
+  expect(serialized).toContain('Only the first page is visible.');
+  expect(serialized).toContain('不要将其描述为已阅读整个文档');
+  expect(serialized).toContain('data:image/jpeg;base64,AA==');
+  expect(serialized).not.toContain('data:application/pdf');
+});
+
 describe('local AI compatibility', () => {
   it('only allows missing or unreadable credentials on explicit loopback OpenAI URLs', () => {
     const unreadable = vi.fn(() => { throw new Error('Keychain failure'); });

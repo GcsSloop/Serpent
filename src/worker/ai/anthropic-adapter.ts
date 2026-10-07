@@ -217,6 +217,7 @@ export class AnthropicVendorAdapter implements VendorAdapter {
         settings: resolveAiAnalysisSettings(request),
         enabledFields: request.enabledFields,
         existingTagNames: request.existingTagNames,
+        mediaType: request.mediaType,
       }) +
       '\n通过调用 `serpent_classify_asset` 工具返回结果。\n'
     );

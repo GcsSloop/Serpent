@@ -21448,7 +21448,7 @@ export class LibraryService {
     ).map((r) => r.asset_id);
   }
 
-  /** Enqueue image jobs and video jobs whose contact sheet is ready. */
+  /** Enqueue visual analysis jobs; document previews and video sheets are prepared lazily. */
   enqueueAiAnalysisJobs(input: {
     libraryId: string;
     assetIds?: string[];
@@ -21516,6 +21516,7 @@ export class LibraryService {
     const imageExts = new Set<string>(IMAGE_EXTENSIONS);
     const videoExts = new Set<string>(VIDEO_EXTENSIONS);
     const modelExts = new Set<string>(MODEL_EXTENSIONS);
+    const documentExts = new Set<string>(DOCUMENT_EXTENSIONS);
 
     let enqueued = 0;
     const jobIds: string[] = [];
@@ -21556,7 +21557,8 @@ export class LibraryService {
         const isImage = imageExts.has(ext);
         const isVideo = videoExts.has(ext);
         const isModel = modelExts.has(ext);
-        if (!isImage && !isVideo && !isModel) {
+        const isDocument = documentExts.has(ext);
+        if (!isImage && !isVideo && !isModel && !isDocument) {
           skippedAssetIds.push(assetId);
           continue;
         }

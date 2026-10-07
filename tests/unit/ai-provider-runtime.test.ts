@@ -191,6 +191,36 @@ describe('loadAiImageInput', () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
+  it('prepares a document preview lazily without decoding or uploading the source document', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'serpent-ai-document-'));
+    roots.push(root);
+    const artifactPath = path.join(root, 'preview.jpg');
+    const preview = Buffer.from('raster-preview');
+    writeFileSync(artifactPath, preview);
+    const service = {
+      getCurrentArtifact: vi.fn().mockReturnValueOnce(null)
+        .mockReturnValue({ artifactId: 'preview', mimeType: 'image/jpeg', status: 'ready' }),
+      generateThumbnail: vi.fn(async () => ({ artifactId: 'preview' })),
+      getArtifactAbsolutePath: vi.fn(() => artifactPath),
+    };
+    const chain = {
+      rotate: vi.fn(), resize: vi.fn(), jpeg: vi.fn(),
+      toBuffer: vi.fn(async () => Buffer.from('bounded-preview')),
+    };
+    chain.rotate.mockReturnValue(chain);
+    chain.resize.mockReturnValue(chain);
+    chain.jpeg.mockReturnValue(chain);
+    const sharpFn = vi.fn(() => chain);
+    const result = await loadAiImageInput(service, 'lib-1', 'pdf-1', {
+      sourcePath: path.join(root, 'source-that-must-not-be-read.pdf'),
+      preferThumbnail: true, maxEdgePx: 512, sharpFn,
+    });
+    expect(service.generateThumbnail).toHaveBeenCalledWith({ libraryId: 'lib-1', assetId: 'pdf-1' });
+    expect(sharpFn).toHaveBeenCalledExactlyOnceWith(preview);
+    expect(chain.resize).toHaveBeenCalledWith(expect.objectContaining({ width: 512, height: 512, withoutEnlargement: true }));
+    expect(result).toEqual({ artifactId: 'preview', mime: 'image/jpeg', imageBase64: Buffer.from('bounded-preview').toString('base64') });
+  });
+
   it('encodes the source path under the max edge and never reads the thumbnail', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'serpent-ai-input-'));
     roots.push(root);

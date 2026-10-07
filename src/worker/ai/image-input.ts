@@ -45,6 +45,8 @@ export interface LoadAiImageInputOptions {
   maxEdgePx?: number;
   sharpFn?: AiAnalysisSharpFactory;
   signal?: AbortSignal;
+  /** Documents must use the owned raster preview, never their source bytes. */
+  preferThumbnail?: boolean;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -142,24 +144,26 @@ export async function loadAiImageInput(
   throwIfAborted(options.signal);
 
   try {
-    const encoded = await encodeAiAnalysisImage(options.sourcePath, maxEdgePx, sharpFn);
-    throwIfAborted(options.signal);
-    return encoded;
+    if (!options.preferThumbnail) {
+      const encoded = await encodeAiAnalysisImage(options.sourcePath, maxEdgePx, sharpFn);
+      throwIfAborted(options.signal);
+      return encoded;
+    }
   } catch {
     // TIFF/EXR/odd codecs may fail; the 512px thumbnail is the safe fallback.
     throwIfAborted(options.signal);
-    const thumbnail = await loadReadyThumbnail(service, libraryId, assetId, options.signal);
-    try {
-      const encoded = await encodeAiAnalysisImage(
-        Buffer.from(thumbnail.imageBase64, 'base64'),
-        maxEdgePx,
-        sharpFn,
-      );
-      throwIfAborted(options.signal);
-      return { ...encoded, artifactId: thumbnail.artifactId };
-    } catch {
-      throwIfAborted(options.signal);
-      return thumbnail;
-    }
+  }
+  const thumbnail = await loadReadyThumbnail(service, libraryId, assetId, options.signal);
+  try {
+    const encoded = await encodeAiAnalysisImage(
+      Buffer.from(thumbnail.imageBase64, 'base64'),
+      maxEdgePx,
+      sharpFn,
+    );
+    throwIfAborted(options.signal);
+    return { ...encoded, artifactId: thumbnail.artifactId };
+  } catch {
+    throwIfAborted(options.signal);
+    return thumbnail;
   }
 }

@@ -197,7 +197,7 @@ export function buildAiAnalysisSystemPrompt(input: {
   };
   existingTagNames: readonly string[];
   /** Visual presentation kind; drives the input-image explanation. */
-  mediaType?: 'image' | 'video' | 'model';
+  mediaType?: 'image' | 'video' | 'model' | 'document';
 }): string {
   const { language, settings, enabledFields, existingTagNames, mediaType = 'image' } = input;
   const fields: string[] = [];
@@ -226,6 +226,8 @@ export function buildAiAnalysisSystemPrompt(input: {
   } else if (mediaType === 'model') {
     prompt +=
       '这是一个 3D 模型三视图拼接而成的图片，从左到右分别代表了斜 45 度视图、正视、侧视、俯视图。请基于这些视图分析模型的外观、形态与材质特征。\n';
+  } else if (mediaType === 'document') {
+    prompt += '输入图片是文档的可视预览。请仅分析当前可见页面的内容和版式，不要将其描述为已阅读整个文档，也不要推断未展示的内容。\n';
   }
 
   prompt += `JSON 形状：{"description": string|null, "tags": string[], "rating": number|null}\n`;

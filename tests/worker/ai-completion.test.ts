@@ -658,6 +658,28 @@ describe('clearAiContent', () => {
 // ---------------------------------------------------------------------------
 
 describe('enqueueAiAnalysisJobs', () => {
+  it('admits document previews alongside images while leaving plain text unsupported', () => {
+    const root = temporaryRoot();
+    const service = new LibraryService();
+    try {
+      const created = service.createLibrary({ displayName: 'AI Documents', selectedParentPath: root });
+      const supported: string[] = [];
+      let unsupported = '';
+      for (const extension of ['pdf', 'ai', 'html', 'htm', 'txt']) {
+        const sourcePath = path.join(root, `document.${extension}`);
+        writeFileSync(sourcePath, extension === 'html' || extension === 'htm'
+          ? '<html><body>Document preview</body></html>' : '%PDF-1.4\n%%EOF\n');
+        const imported = importNoConflict(service, created.libraryId, sourcePath);
+        const assetId = imported.assets[0]!.assetId;
+        if (extension === 'txt') unsupported = assetId;
+        else supported.push(assetId);
+      }
+      const result = service.enqueueAiAnalysisJobs({ libraryId: created.libraryId, assetIds: [...supported, unsupported] });
+      expect(result.enqueued).toBe(4);
+      expect(result.skippedAssetIds).toEqual([unsupported]);
+      expect(service.getAiJobStatus(created.libraryId).jobs.map((job) => job.assetId).sort()).toEqual(supported.sort());
+    } finally { service.closeAll(); }
+  });
   it('enqueues AI analysis jobs for image assets', () => {
     const root = temporaryRoot();
     const service = new LibraryService();

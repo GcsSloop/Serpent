@@ -6,6 +6,26 @@ import sharp from 'sharp';
 import type { SerpentLibraryApi as LibraryApi } from '../../src/shared/library-api';
 import { assetCard, electronLaunchEnv, openAppSettingsDialog } from './electron-test-helpers';
 
+function coloredPagePdf(color = '1 0 0'): Buffer {
+  const stream = `${color} rg 20 20 260 160 re f`;
+  const objects = [
+    '<</Type/Catalog/Pages 2 0 R>>',
+    '<</Type/Pages/Kids[3 0 R]/Count 1>>',
+    '<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 4 0 R>>',
+    `<</Length ${stream.length}>>stream\n${stream}\nendstream`,
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += 'xref\n0 5\n0000000000 65535 f \n';
+  pdf += offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
+  return Buffer.from(`${pdf}trailer<</Size 5/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`);
+}
+
 test('packaged app saves keyless local AI settings and repeatedly analyzes with Qwen', async () => {
   test.setTimeout(240_000);
   const executablePath = process.env.SERPENT_E2E_PACKAGED_EXECUTABLE;
@@ -21,9 +41,12 @@ test('packaged app saves keyless local AI settings and repeatedly analyzes with 
   }));
   // Reproduce an existing but unreadable key without touching the user's profile.
   writeFileSync(path.join(userData, 'ai-key.enc'), 'invalid-key-record');
-  const sources = [path.join(root, 'red.png'), path.join(root, 'green.png')] as const;
-  await sharp({ create: { width: 320, height: 240, channels: 3, background: '#ff0000' } }).png().toFile(sources[0]);
-  await sharp({ create: { width: 320, height: 240, channels: 3, background: '#00ff00' } }).png().toFile(sources[1]);
+  const sources = ['red.png', 'green.png', 'preview.pdf', 'preview.ai', 'preview.html'].map((name) => path.join(root, name));
+  await sharp({ create: { width: 320, height: 240, channels: 3, background: '#ff0000' } }).png().toFile(sources[0]!);
+  await sharp({ create: { width: 320, height: 240, channels: 3, background: '#00ff00' } }).png().toFile(sources[1]!);
+  writeFileSync(sources[2]!, coloredPagePdf());
+  writeFileSync(sources[3]!, coloredPagePdf('0 0 1'));
+  writeFileSync(sources[4]!, '<!doctype html><html><body style="background:#ffffff"><div style="width:300px;height:200px;background:#ff0000"></div></body></html>');
   const unsupportedSource = path.join(root, 'unsupported.txt');
   writeFileSync(unsupportedSource, 'An unsupported visual-analysis source');
   const app = await electron.launch({ executablePath, args: [], env: electronLaunchEnv({
@@ -91,7 +114,7 @@ test('packaged app saves keyless local AI settings and repeatedly analyzes with 
 
     // Real UI analysis, first edit followed by a second file and repeat analysis.
     let completed = 0;
-    for (const filename of ['red.png', 'green.png', 'red.png']) {
+    for (const filename of ['red.png', 'green.png', 'red.png', 'preview.pdf', 'preview.pdf', 'preview.ai', 'preview.html']) {
       completed += 1;
       const card = assetCard(window, filename);
       await card.click();

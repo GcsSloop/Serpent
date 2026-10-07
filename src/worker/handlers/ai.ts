@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isSupportedDocumentExtension } from '../../shared/media-formats';
 import type { ParentPort } from 'electron';
 import type { WorkerRequest } from '../../shared/protocol/requests';
 import type { AiProgressEvent, WorkerResult } from '../../shared/protocol/responses';
@@ -171,6 +172,7 @@ export async function executeAiWorkerCommand(
         libraryId,
         assetId,
       );
+      const isDocument = isSupportedDocumentExtension(filePath);
 
       let imageBase64: string | undefined;
       let contactSheetBase64: string | undefined;
@@ -212,7 +214,7 @@ export async function executeAiWorkerCommand(
             reason: 'CONTACT_SHEET_REQUIRED',
           };
         }
-      } else if (mime.startsWith('image/')) {
+      } else if (mime.startsWith('image/') || isDocument) {
         // Resize source to the configured longest-edge cap (default 2K).
         // Unreadable originals (e.g. some EXR) fall back to the thumbnail.
         try {
@@ -224,6 +226,7 @@ export async function executeAiWorkerCommand(
                 sourcePath: filePath,
                 maxEdgePx: maxAnalysisImageEdgePx,
                 signal: controls?.signal,
+                preferThumbnail: isDocument,
               },
             ));
           imageBase64 = imageInput.imageBase64;
@@ -301,7 +304,10 @@ export async function executeAiWorkerCommand(
         displayName,
         filename,
         mime: requestMime,
-        mediaType: isModelFileFormat(filePath) ? 'model' : (isVideo ? 'video' : 'image'),
+        mediaType: isDocument ? 'document' : isModelFileFormat(filePath) ? 'model' : (isVideo ? 'video' : 'image'),
+        ...(isDocument ? { visualSourceDescription: /\.(pdf|ai)$/iu.test(filePath)
+          ? 'This image shows only the first page of the document. Do not infer the contents of later pages.'
+          : 'This image shows only the visible viewport of the document preview. Do not infer unseen content.' } : {}),
         imageBase64,
         contactSheetBase64,
         contactSheetMime,
