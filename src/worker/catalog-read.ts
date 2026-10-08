@@ -746,6 +746,16 @@ export function catalogAssetSummaryFromRow(
       width,
       height,
     });
+  // A failed derived thumbnail must not hide a still-readable source image.
+  // This is deliberately only a failure fallback: normal cards continue to
+  // use the bounded source-direct policy above, while a source that Chromium
+  // cannot read still falls through to AssetCardMedia's cracked-file state.
+  const sourceFallback = sourceDirect || (
+    row.thumbnail_status === 'failed'
+    && row.availability === 'available'
+    && !row.deleted_at
+    && mediaType === 'image'
+  );
   return {
     assetId: row.asset_id,
     locationKind: row.location_kind,
@@ -765,7 +775,7 @@ export function catalogAssetSummaryFromRow(
     remainingDays,
     thumbnailStatus: row.thumbnail_status ?? null,
     thumbnailArtifactId: row.thumbnail_artifact_id ?? null,
-    ...(sourceDirect ? { previewKind: 'source' as const, previewRevisionId: row.current_revision_id } : {}),
+    ...(sourceFallback ? { previewKind: 'source' as const, previewRevisionId: row.current_revision_id } : {}),
     mediaType,
     width,
     height,

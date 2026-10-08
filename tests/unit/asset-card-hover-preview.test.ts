@@ -237,7 +237,7 @@ describe("resolveAssetCardCoverUrl", () => {
     ).toEqual({ url: coverSrc("lib", "art-1"), usedSourceFallback: false });
   });
 
-  it("uses the default icon path when the thumbnail failed", () => {
+  it("falls back to the current source when a thumbnail failed", () => {
     expect(
       resolveAssetCardCoverUrl({
         libraryId: "lib",
@@ -247,8 +247,13 @@ describe("resolveAssetCardCoverUrl", () => {
         deletedAt: null,
         thumbnailStatus: "failed",
         thumbnailArtifactId: null,
+        previewKind: "source",
+        previewRevisionId: "rev-1",
       }),
-    ).toEqual({ url: null, usedSourceFallback: false });
+    ).toEqual({
+      url: "serpent://source/lib/a1?revision=rev-1",
+      usedSourceFallback: true,
+    });
   });
 
   it("uses a bounded source preview while the thumbnail is pending", () => {

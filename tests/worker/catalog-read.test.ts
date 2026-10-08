@@ -418,6 +418,28 @@ describe('shared pure catalog reads', () => {
       artifact_height: 20,
     }, 0)).toMatchObject({ previewKind: 'source', previewRevisionId: 'revision-direct' });
 
+    expect(catalogAssetSummaryFromRow({
+      asset_id: 'failed-source',
+      location_kind: 'linked',
+      managed_folder_id: null,
+      linked_folder_id: 'linked-folder',
+      relative_file_path: 'IMG_6309.png',
+      current_revision_id: 'revision-failed-source',
+      availability: 'available',
+      byte_size: 8 * 1024 * 1024,
+      modified_at: '2026-09-14T00:00:00.000Z',
+      rating: 0,
+      favorite: 0,
+      media_type: 'image',
+      thumbnail_status: 'failed',
+      artifact_width: 4032,
+      artifact_height: 3024,
+    }, 0)).toMatchObject({
+      thumbnailStatus: 'failed',
+      previewKind: 'source',
+      previewRevisionId: 'revision-failed-source',
+    });
+
     expect(catalogBrowseLayoutEntryFromRow({
       asset_id: 'layout',
       relative_file_path: 'still.png',

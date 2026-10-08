@@ -114,6 +114,9 @@ export function resolveAssetCardCoverUrl(input: {
       usedSourceFallback: false,
     };
   }
+  // A failed derived thumbnail can still have a readable current source.
+  // catalog-read marks that source explicitly, so this branch also handles
+  // failed thumbnails without resurrecting an old artifact.
   if (
     input.mediaType === "image"
     && input.availability !== "missing"
